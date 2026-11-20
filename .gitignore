@@ -1,0 +1,48 @@
+# Python virtual environment
+hackaton/
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Node.js
+node_modules/
+npm-debug.log*
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Uploaded files
+backend/uploads/
+
+# Audio recordings
+*.wav
+*.mp3
+*.webm
+*.ogg
+*.m4a
+
+# AI models and caches
+*.safetensors
+*.pt
+*.pth
+*.gguf
+.cache/
+models/
+
+# React build
+frontend/dist/
+frontend/build/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
