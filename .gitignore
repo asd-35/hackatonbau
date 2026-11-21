@@ -1,25 +1,39 @@
-# Python virtual environment
+# Python virtual environments
 hackaton/
 venv/
 .venv/
+env/
 
 # Python cache
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Node.js
+# Node.js dependencies
 node_modules/
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Environment variables
+# React / Vite build files
+frontend/dist/
+frontend/build/
+dist/
+build/
+.vite/
+
+# Environment variables and secrets
 .env
 .env.*
 !.env.example
+*.pem
+*.key
 
 # Uploaded files
 backend/uploads/
+uploads/
 
 # Audio recordings
 *.wav
@@ -27,22 +41,32 @@ backend/uploads/
 *.webm
 *.ogg
 *.m4a
+*.flac
 
-# AI models and caches
+# AI models and checkpoints
 *.safetensors
+*.gguf
 *.pt
 *.pth
-*.gguf
-.cache/
+*.ckpt
 models/
+.cache/
 
-# React build
-frontend/dist/
-frontend/build/
-
-# Logs
+# Logs and temporary files
 *.log
+*.tmp
+*.temp
+tmp/
+temp/
 
-# OS files
+# IDE and OS files
+.vscode/*
+!.vscode/extensions.json
+.idea/
 .DS_Store
 Thumbs.db
+
+# Coverage
+coverage/
+htmlcov/
+.coverage
