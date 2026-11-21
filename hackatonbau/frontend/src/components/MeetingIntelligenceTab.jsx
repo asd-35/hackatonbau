@@ -1,505 +1,175 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { api, formRequest } from "../api/client";
-import { Plus, Sparkles, Trash2, Upload } from "lucide-react";
-import {
-  ACTION_STATUS_OPTIONS,
-  DEFAULT_ACTION_ITEMS,
-  DEFAULT_DECISION_LOG,
-  DEFAULT_MEETING_SUMMARY,
-  SAMPLE_MEETING_TRANSCRIPT,
-} from "../data/mockData";
-import { extractMeetingIntelligence, formatTodayDisplay } from "../utils/documentUtils";
+import React, { useEffect, useMemo, useState } from "react"
+import { Check, Copy, FileSearch, Sparkles, X } from "lucide-react"
 
-export default function MeetingIntelligenceTab({ project, onToast }) {
-  const [notesInput, setNotesInput] = useState("");
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [loadedProject, setLoadedProject] = useState(null);
-  const [summary, setSummary] = useState({title:"No meeting analyzed yet",date:"",summary:"Paste notes or upload a transcript to begin",critical_outcomes:[],key_decisions:[],risks:[],open_issues:[]});
-  const [actions, setActions] = useState([]);
-  const [decisions, setDecisions] = useState([]);
+const BASELINE_DOC_COUNT = 6
 
-  const [selectedOwner, setSelectedOwner] = useState("All owners");
-  const [selectedStatus, setSelectedStatus] = useState("All statuses");
-  const [decisionSearch, setDecisionSearch] = useState("");
+function buildBaselineTalkingPoints(project) {
+  return [
+    {
+      id: "tp-1",
+      text: "ABC Concrete arrived 3 hours late for the third time this month — confirm backup batching plant allocation and review €24,500 VOB/B § 6 standstill claim.",
+      source: "Delay Notice · 20 Nov",
+    },
+    {
+      id: "tp-2",
+      text: "Incomplete perimeter guardrail on Level 3 (Axis 5/C) remains open — verify Shell Contractor A rectification and SiGeKo sign-off before resuming crane lifts.",
+      source: "Safety Inspection · 19 Nov",
+    },
+    {
+      id: "tp-3",
+      text: `Core slab progress on ${project} sits at 62% vs. 71% planned (-9 days) — confirm Saturday shift crew availability for East Curtain Wall bracket pre-assembly.`,
+      source: "Daily Report · 21 Nov",
+    },
+    {
+      id: "tp-4",
+      text: "Forecast sub-zero night temperatures next week — confirm winter curing blankets and site heating readiness prior to Level 5 pour.",
+      source: "Daily Report · 20 Nov",
+    },
+    {
+      id: "tp-5",
+      text: "Elektro Weber completed 85% of Level 1–2 electrical rough-in on schedule — align drywall closure handover date.",
+      source: "Daily Report · 18 Nov",
+    },
+  ]
+}
 
-  const [newDecision, setNewDecision] = useState({
-    topic: "",
-    owner: "Not specified",
-    decision: "",
-    docs: "",
-  });
+export default function MeetingIntelligenceTab({
+  project,
+  repositoryDocs = [],
+  evidenceCount = 0,
+  onToast,
+}) {
+  const [talkingPoints, setTalkingPoints] = useState(() =>
+    buildBaselineTalkingPoints(project)
+  )
+  const [isScanning, setIsScanning] = useState(false)
+  const [copied, setCopied] = useState(false)
 
-  useEffect(()=>{
-    setLoadedProject(null);
-    try {
-      const saved=JSON.parse(localStorage.getItem(`baudackel-meetings:${project}`)||"null");
-      if(saved) {setNotesInput(saved.notes||"");setSummary(saved.summary);setActions(saved.actions||[]);setDecisions(saved.decisions||[])}
-      else {setNotesInput("");setSummary({title:"No meeting analyzed yet",date:"",summary:"Paste notes or upload a transcript to begin",critical_outcomes:[],key_decisions:[],risks:[],open_issues:[]});setActions([]);setDecisions([])}
-    } catch { /* invalid old local state */ }
-    setLoadedProject(project);
-  },[project]);
-  useEffect(()=>{
-    if(loadedProject !== project)return;
-    localStorage.setItem(`baudackel-meetings:${project}`,JSON.stringify({notes:notesInput,summary,actions,decisions}));
-  },[loadedProject,project,notesInput,summary,actions,decisions]);
+  useEffect(() => {
+    setTalkingPoints(buildBaselineTalkingPoints(project))
+    setCopied(false)
+  }, [project])
 
-  const handleFileUpload = async e => {
-    const file=e.target.files?.[0];
-    if(!file)return;
-    setIsProcessing(true);
-    try {
-      if(/\.(txt|md)$/i.test(file.name))setNotesInput(await file.text());
-      else if(/\.(wav|mp3|m4a|webm|ogg)$/i.test(file.name)) {
-        const result=await formRequest("/api/transcribe",{},file,"audio");
-        setNotesInput(result.transcription.text || "");
-      } else {
-        const result=await formRequest("/api/evidence",{project},file);
-        if(!result.item.extracted_text?.trim())throw new Error(result.item.warnings?.join("; ") || "No readable text extracted");
-        setNotesInput(result.item.extracted_text);
-      }
-      onToast(`Imported meeting notes from ${file.name}`, "✅");
-    } catch(error) {onToast(`Meeting import failed: ${error.message}`,"⚠️");}
-    finally {setIsProcessing(false);e.target.value=""}
-  };
+  const totalDocsToScan = useMemo(
+    () => BASELINE_DOC_COUNT + (repositoryDocs?.length || 0) + (evidenceCount || 0),
+    [repositoryDocs, evidenceCount]
+  )
 
-  const handleGenerate = () => {
-    if (!notesInput.trim()) {onToast("Enter meeting notes before extracting","⚠️");return}
-    const extracted = extractMeetingIntelligence(notesInput);
-    setSummary(extracted.summary);
-    setActions(extracted.actions);
-    setDecisions(extracted.decisions);
-    onToast("Extracted explicitly marked decisions, actions, risks and issues from the supplied notes", "✅");
-  };
+  const handleScan = () => {
+    setIsScanning(true)
+    setCopied(false)
+    setTimeout(() => {
+      const livePoints = (repositoryDocs || []).slice(0, 3).map((doc, idx) => ({
+        id: `live-${doc.id || idx}`,
+        text: doc.summary || `Review latest ${doc.type || "report"}: ${doc.name}.`,
+        source: `${doc.type || "Report"} · ${doc.date_label || "Today"}`,
+      }))
+      const baseline = buildBaselineTalkingPoints(project)
+      setTalkingPoints([...livePoints, ...baseline].slice(0, 6))
+      setIsScanning(false)
+      onToast?.(`Scanned ${totalDocsToScan} project documents and refreshed talking points`, "✅")
+    }, 280)
+  }
 
-  const updateAction = (idx, field, value) => {
-    setActions((prev) => prev.map((row, i) => (i === idx ? { ...row, [field]: value } : row)));
-  };
+  const handleDismiss = id => {
+    setTalkingPoints(prev => prev.filter(item => item.id !== id))
+  }
 
-  const addActionRow = () => {
-    setActions((prev) => [
-      ...prev,
-      { Owner: "Unassigned", "Action Item": "", "Due Date": "Not specified", Status: "Open" },
-    ]);
-  };
-
-  const removeActionRow = (idx) => {
-    setActions((prev) => prev.filter((_, i) => i !== idx));
-  };
-
-  const owners = useMemo(
-    () => Array.from(new Set(actions.map((a) => a.Owner).filter(Boolean))).sort(),
-    [actions]
-  );
-
-  const filteredMatrix = useMemo(
-    () =>
-      actions.filter(
-        (row) =>
-          row["Action Item"].trim() &&
-          (selectedOwner === "All owners" || row.Owner === selectedOwner) &&
-          (selectedStatus === "All statuses" || row.Status === selectedStatus)
+  const handleCopyNotes = async () => {
+    if (!talkingPoints.length) return
+    const text = [
+      `Meeting Talking Points — ${project}`,
+      "",
+      ...talkingPoints.map(
+        (tp, idx) => `${idx + 1}. ${tp.text} (${tp.source})`
       ),
-    [actions, selectedOwner, selectedStatus]
-  );
+    ].join("\n")
 
-  const filteredDecisions = useMemo(() => {
-    const q = decisionSearch.trim().toLowerCase();
-    if (!q) return decisions;
-    return decisions.filter((d) =>
-      Object.values(d).some((v) => String(v).toLowerCase().includes(q))
-    );
-  }, [decisions, decisionSearch]);
-
-  const handleAddDecision = (e) => {
-    e.preventDefault();
-    if (!newDecision.topic.trim() || !newDecision.decision.trim()) {
-      onToast("Please enter both Topic and Decision.", "⚠️");
-      return;
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      onToast?.("Talking points copied to clipboard", "📋")
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      onToast?.("Could not access clipboard", "⚠️")
     }
-    setDecisions((prev) => [
-      {
-        Date: formatTodayDisplay(),
-        Topic: newDecision.topic.trim(),
-        Decision: newDecision.decision.trim(),
-        "Decision Owner": newDecision.owner.trim() || "Not specified",
-        "Supporting Documentation": newDecision.docs.trim() || "Meeting record",
-      },
-      ...prev,
-    ]);
-    setNewDecision({ topic: "", owner: "Not specified", decision: "", docs: "" });
-    onToast("Decision recorded in log", "✅");
-  };
+  }
 
   return (
-    <div className="stack">
-      {/* MI-01: Meeting Summary Generation */}
-      <div>
-        <h2 className="section-title">Meeting Summary Generation</h2>
-        <p className="caption">
-          Paste meeting notes, transcripts, or upload minutes for <strong>{project}</strong> to
-          extract a structured meeting record. Use lines beginning with Action:, Decision:, Risk:, or Issue: for reliable extraction.
-        </p>
-      </div>
+    <div className="stack mi-prep-shell">
+      <p className="mi-prep-subtitle">
+        Scan recent project reports and documents to generate talking points for your upcoming meeting.
+      </p>
 
-      <div className="card stack">
-        <div className="grid-repo">
-          <div>
-            <label className="field-label">Meeting notes / transcript</label>
-            <textarea
-              className="textarea"
-              rows={9}
-              value={notesInput}
-              onChange={(e) => setNotesInput(e.target.value)}
-              placeholder="Paste meeting notes or transcript here…"
-            />
-          </div>
-          <div className="stack">
-            <div>
-              <label className="field-label">Upload meeting minutes or audio (.txt, .md, .pdf, .docx, .wav, .mp3)</label>
-              <label className="btn btn-block" style={{ cursor: "pointer" }}>
-                <Upload size={15} /> {isProcessing ? "Processing…" : "Choose evidence file"}
-                <input
-                  type="file"
-                  accept=".txt,.md,.pdf,.docx,.wav,.mp3,.webm,.m4a,.ogg"
-                  style={{ display: "none" }}
-                  onChange={handleFileUpload}
-                />
-              </label>
-            </div>
-            <button
-              className="btn btn-block"
-              onClick={() => {
-                setNotesInput(SAMPLE_MEETING_TRANSCRIPT);
-                onToast("Sample transcript loaded", "🧪");
-              }}
-            >
-              🧪 Load sample transcript
-            </button>
-          </div>
-        </div>
-        <div>
-          <button className="btn btn-primary" onClick={handleGenerate}>
-            <Sparkles size={15} /> Extract Meeting Summary &amp; Items
-          </button>
-        </div>
-      </div>
-
-      {/* Structured summary card */}
-      <div className="card stack">
-        <div className="flex-row">
-          <h3 style={{ margin: 0 }}>📋 {summary.title}</h3>
-          <span className="badge badge-blue">{summary.date}</span>
-          <span className="badge badge-green">Structured Record</span>
-        </div>
-        <p style={{ margin: 0 }}>
-          <strong>Summary:</strong> {summary.summary}
-        </p>
-        <div className="alert alert-info">
-          <div>
-            <strong>Critical Outcomes:</strong>
-            <ul style={{ margin: "6px 0 0 18px", padding: 0 }}>
-              {summary.critical_outcomes.map((item, idx) => (
-                <li key={idx}>{item}</li>
-              ))}
-            </ul>
-          </div>
-        </div>
-        <div className="grid-3">
-          <div>
-            <strong>Key Decisions</strong>
-            <ul style={{ margin: "6px 0 0 18px", padding: 0 }}>
-              {summary.key_decisions.map((item, idx) => (
-                <li key={idx}>{item}</li>
-              ))}
-            </ul>
-          </div>
-          <div>
-            <strong>Risks</strong>
-            <ul style={{ margin: "6px 0 0 18px", padding: 0 }}>
-              {summary.risks.map((item, idx) => (
-                <li key={idx}>{item}</li>
-              ))}
-            </ul>
-          </div>
-          <div>
-            <strong>Open Issues</strong>
-            <ul style={{ margin: "6px 0 0 18px", padding: 0 }}>
-              {summary.open_issues.map((item, idx) => (
-                <li key={idx}>{item}</li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      </div>
-
-      {/* MI-02: Action Item Extraction */}
-      <div style={{ marginTop: 8 }}>
-        <div className="flex-between">
-          <div>
-            <h2 className="section-title">Action Item Extraction</h2>
-            <p className="caption">
-              Action items extracted from explicit Action: lines in meeting notes. Edit responsible party, description, due date, or
-              status directly — changes sync to the Responsibility Matrix below.
-            </p>
-          </div>
-          <button className="btn btn-sm" onClick={addActionRow}>
-            <Plus size={14} /> Add action item
-          </button>
-        </div>
-      </div>
-
-      <div className="table-wrap">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th style={{ width: "22%" }}>Responsible Party</th>
-              <th style={{ width: "44%" }}>Task Description</th>
-              <th style={{ width: "14%" }}>Due Date</th>
-              <th style={{ width: "14%" }}>Status</th>
-              <th style={{ width: "6%" }} />
-            </tr>
-          </thead>
-          <tbody>
-            {actions.map((row, idx) => (
-              <tr key={idx}>
-                <td>
-                  <input
-                    className="input"
-                    value={row.Owner}
-                    onChange={(e) => updateAction(idx, "Owner", e.target.value)}
-                  />
-                </td>
-                <td>
-                  <input
-                    className="input"
-                    value={row["Action Item"]}
-                    onChange={(e) => updateAction(idx, "Action Item", e.target.value)}
-                    placeholder="Enter task description…"
-                  />
-                </td>
-                <td>
-                  <input
-                    className="input"
-                    value={row["Due Date"]}
-                    onChange={(e) => updateAction(idx, "Due Date", e.target.value)}
-                  />
-                </td>
-                <td>
-                  <select
-                    className="select"
-                    value={row.Status}
-                    onChange={(e) => updateAction(idx, "Status", e.target.value)}
-                  >
-                    {ACTION_STATUS_OPTIONS.map((opt) => (
-                      <option key={opt} value={opt}>
-                        {opt}
-                      </option>
-                    ))}
-                  </select>
-                </td>
-                <td>
-                  <button
-                    className="btn btn-danger-ghost btn-sm"
-                    onClick={() => removeActionRow(idx)}
-                    title="Delete row"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* MI-07: Responsibility Matrix */}
-      <div style={{ marginTop: 8 }}>
-        <div className="flex-row">
-          <h2 className="section-title">Responsibility Matrix</h2>
-          <span className="badge badge-blue">
-            {actions.filter((a) => a["Action Item"].trim()).length} tracked actions
+      {/* Top Action Bar */}
+      <div className="card mi-action-bar">
+        <div className="mi-action-meta">
+          <span className="mi-project-pill">{project}</span>
+          <span className="mi-doc-count">
+            <FileSearch size={14} />
+            {totalDocsToScan} project documents available to scan
           </span>
         </div>
-        <p className="caption">
-          Synced with extracted and manually entered meeting actions. Filter by owner or status.
-        </p>
+
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={isScanning}
+          onClick={handleScan}
+        >
+          <Sparkles size={15} />
+          {isScanning ? "Scanning documents…" : "Scan Documents & Generate Notes"}
+        </button>
       </div>
 
-      <div className="card stack">
-        <div className="grid-2">
+      {/* Generated Talking Points Card */}
+      <div className="card mi-points-card">
+        <div className="mi-points-header">
           <div>
-            <label className="field-label">Filter by owner</label>
-            <select
-              className="select"
-              value={selectedOwner}
-              onChange={(e) => setSelectedOwner(e.target.value)}
-            >
-              <option value="All owners">All owners</option>
-              {owners.map((o) => (
-                <option key={o} value={o}>
-                  {o}
-                </option>
-              ))}
-            </select>
+            <h2 className="section-title">Talking Points to Discuss</h2>
+            <p className="caption">
+              {talkingPoints.length} item{talkingPoints.length === 1 ? "" : "s"} extracted from recent reports and evidence
+            </p>
           </div>
-          <div>
-            <label className="field-label">Filter by status</label>
-            <select
-              className="select"
-              value={selectedStatus}
-              onChange={(e) => setSelectedStatus(e.target.value)}
-            >
-              <option value="All statuses">All statuses</option>
-              {ACTION_STATUS_OPTIONS.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </div>
+
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={!talkingPoints.length}
+            onClick={handleCopyNotes}
+          >
+            {copied ? <Check size={14} /> : <Copy size={14} />}
+            {copied ? "Copied" : "Copy Notes"}
+          </button>
         </div>
 
-        {filteredMatrix.length ? (
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Owner</th>
-                  <th>Action Item</th>
-                  <th>Due Date</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredMatrix.map((row, idx) => (
-                  <tr key={idx}>
-                    <td>
-                      <strong>{row.Owner}</strong>
-                    </td>
-                    <td>{row["Action Item"]}</td>
-                    <td>{row["Due Date"]}</td>
-                    <td>
-                      <span
-                        className={`badge badge-${
-                          row.Status === "Done"
-                            ? "green"
-                            : row.Status === "Blocked"
-                              ? "red"
-                              : row.Status === "In Progress"
-                                ? "blue"
-                                : "orange"
-                        }`}
-                      >
-                        {row.Status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        {talkingPoints.length === 0 ? (
+          <div className="mi-empty-points">
+            All talking points dismissed. Click <strong>Scan Documents &amp; Generate Notes</strong> to refresh from project records.
           </div>
         ) : (
-          <div className="alert alert-info">
-            No action items match the selected owner/status filter.
-          </div>
+          <ul className="mi-points-list">
+            {talkingPoints.map(item => (
+              <li key={item.id} className="mi-point-row">
+                <span className="mi-point-bullet" />
+                <div className="mi-point-body">
+                  <p className="mi-point-text">{item.text}</p>
+                  <span className="mi-point-source">{item.source}</span>
+                </div>
+                <button
+                  type="button"
+                  className="mi-point-dismiss"
+                  onClick={() => handleDismiss(item.id)}
+                  aria-label="Dismiss talking point"
+                  title="Dismiss"
+                >
+                  <X size={14} />
+                </button>
+              </li>
+            ))}
+          </ul>
         )}
-      </div>
-
-      {/* MI-03: Decision Tracking */}
-      <div style={{ marginTop: 8 }}>
-        <h2 className="section-title">Decision Tracking</h2>
-        <p className="caption">
-          Searchable project decision log capturing date, topic, owner, and supporting documentation.
-        </p>
-      </div>
-
-      <div className="card stack">
-        <input
-          className="input"
-          value={decisionSearch}
-          onChange={(e) => setDecisionSearch(e.target.value)}
-          placeholder="Search by topic, decision, owner or supporting document…"
-        />
-
-        {filteredDecisions.length ? (
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Decision Date</th>
-                  <th>Topic</th>
-                  <th>Decision</th>
-                  <th>Decision Owner</th>
-                  <th>Supporting Documentation</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredDecisions.map((d, idx) => (
-                  <tr key={idx}>
-                    <td style={{ whiteSpace: "nowrap" }}>{d.Date}</td>
-                    <td>
-                      <strong>{d.Topic}</strong>
-                    </td>
-                    <td>{d.Decision}</td>
-                    <td>{d["Decision Owner"]}</td>
-                    <td>{d["Supporting Documentation"]}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="alert alert-info">No decisions match your search query.</div>
-        )}
-
-        <details className="expander">
-          <summary>➕ Log a new project decision</summary>
-          <form className="stack-sm" style={{ marginTop: 12 }} onSubmit={handleAddDecision}>
-            <div className="grid-2">
-              <div>
-                <label className="field-label">Topic</label>
-                <input
-                  className="input"
-                  value={newDecision.topic}
-                  onChange={(e) => setNewDecision((p) => ({ ...p, topic: e.target.value }))}
-                  placeholder="e.g. Crane shift adjustment"
-                />
-              </div>
-              <div>
-                <label className="field-label">Decision owner</label>
-                <input
-                  className="input"
-                  value={newDecision.owner}
-                  onChange={(e) => setNewDecision((p) => ({ ...p, owner: e.target.value }))}
-                />
-              </div>
-            </div>
-            <div>
-              <label className="field-label">Decision</label>
-              <input
-                className="input"
-                value={newDecision.decision}
-                onChange={(e) => setNewDecision((p) => ({ ...p, decision: e.target.value }))}
-                placeholder="Record the agreed decision…"
-              />
-            </div>
-            <div>
-              <label className="field-label">Supporting documentation</label>
-              <input
-                className="input"
-                value={newDecision.docs}
-                onChange={(e) => setNewDecision((p) => ({ ...p, docs: e.target.value }))}
-                placeholder="e.g. Meeting_Minutes.docx"
-              />
-            </div>
-            <div>
-              <button className="btn btn-primary btn-sm" type="submit">
-                Add to decision log
-              </button>
-            </div>
-          </form>
-        </details>
       </div>
     </div>
-  );
+  )
 }

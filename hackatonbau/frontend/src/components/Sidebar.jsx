@@ -1,5 +1,4 @@
 import React, { useState } from "react";
-import { Mic } from "lucide-react";
 import { PROJECTS } from "../data/mockData";
 
 export default function Sidebar({
@@ -8,27 +7,26 @@ export default function Sidebar({
   tabs,
   activeTab,
   onTabChange,
-  onQuickDictate,
-  isRecording,
 }) {
-  const [logoFailed, setLogoFailed] = useState(false);
+  const [mascotFailed, setMascotFailed] = useState(false);
 
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
-        {!logoFailed ? (
-          <div className="brand-blended">
+        <div className="brand-lockup">
+          {!mascotFailed && (
             <img
-              src="/assets/logo.png"
-              alt="BauDackel"
-              onError={() => setLogoFailed(true)}
+              src="/assets/mascot.png"
+              alt="BauDackel mascot"
+              className="brand-mascot"
+              onError={() => setMascotFailed(true)}
             />
+          )}
+          <div className="brand-wordmark">
+            <span className="brand-word-bau">Bau</span>
+            <span className="brand-word-dackel">Dackel</span>
           </div>
-        ) : (
-          <div className="brand-fallback">
-            <span className="brand-mark">▰</span> BauDackel
-          </div>
-        )}
+        </div>
         <div className="brand-tagline">Your site, in one workspace.</div>
       </div>
 
@@ -45,14 +43,6 @@ export default function Sidebar({
         ))}
       </nav>
 
-      <button
-        type="button"
-        className="btn btn-primary btn-block sidebar-dictate-btn"
-        onClick={onQuickDictate}
-      >
-        <Mic size={15} /> {isRecording ? "Stop recording" : "Quick Dictate"}
-      </button>
-
       <div className="sidebar-card">
         <select
           aria-label="Active project"
@@ -67,7 +57,9 @@ export default function Sidebar({
           ))}
         </select>
 
-        <div className="caption" style={{padding:"8px 0"}}>Live progress is available in Performance Monitoring once you enter a real schedule.</div>
+        <div className="sidebar-helper-text">
+          Live progress is available in Performance Monitoring once you enter a real schedule.
+        </div>
         {/* Demo figures removed until a project schedule is configured. */}
         {/* <div className="progress-wrap">
           <div className="progress-label">Progress · 62%</div>

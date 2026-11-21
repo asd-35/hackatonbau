@@ -648,14 +648,18 @@ export default function App() {
         tabs={TABS}
         activeTab={activeTab}
         onTabChange={setActiveTab}
-        onQuickDictate={handleQuickDictate}
-        isRecording={isRecording}
       />
 
       <main className="main-content">
         <header className="site-hero">
           <div className="site-eyebrow">{project} · LIVE WORKSPACE</div>
-          <h1>🏗 Construction documentation workspace</h1>
+          <h1>
+            {activeTab === "knowledge"
+              ? "Knowledge Hub"
+              : activeTab === "meetings"
+                ? "Meeting Intelligence"
+                : "Construction documentation workspace"}
+          </h1>
         </header>
 
         {pmActionFeedback && (
@@ -739,7 +743,12 @@ export default function App() {
         )}
 
         {activeTab === "meetings" && (
-          <MeetingIntelligenceTab project={project} onToast={addToast} />
+          <MeetingIntelligenceTab
+            project={project}
+            repositoryDocs={repositoryDocs}
+            evidenceCount={evidenceNames.length}
+            onToast={addToast}
+          />
         )}
       </main>
 
