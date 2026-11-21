@@ -1,38 +1,18 @@
 import { REPORT_TYPES } from "../data/mockData"
 
-// Accept only grounded, readable report information.
 const BAD_VALUE = /[{}\[\]<>]|\w_\w|\b(?:undefined|function)\b/i
-
-const EMPTY =
-  /^(?:none|null|unknown|not available|not specified)$/i
-
-const FUTURE =
-  /\b(?:tomorrow|will|should|must|planned? to|plan to|needs? to be)\b/i
-
-const NOT_DONE =
-  /\b(?:not installed|not completed|never installed|wasn't installed|were not installed|awaiting installation)\b/i
-
-const WEATHER =
-  /\b(?:weather|rain|rainy|raining|snow|snowing|cloudy|overcast|sunny|windy|fog|temperature|degrees|celsius|drizzle)\b/i
-
-const STAFFING =
-  /\b(?:(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|hundred)\s+(?:workers?|employees?|laborers?)|workers? (?:present|on site)|crew (?:present|on site))\b/i
-
-const INSPECTION =
-  /\b(?:inspected|inspection|examined|checked|tested|discovered|measured|verified|quality check)\b/i
-
-const SAFETY =
-  /\b(?:fell|fall|slipped|injured|injury|ambulance|taken to (?:the )?hospital|hospitalized|first aid|near miss|hazard|accident|safety barrier|guardrail|unsecured|platform collapsed|safety supervisor|staircase was closed)\b/i
-
-const EQUIPMENT =
-  /\b(?:crane|excavator|forklift|lift|hoist|generator|pump|compressor|bulldozer|machine|machinery)\b/i
-
-const WORK =
-  /\b(?:installed|completed|finished|constructed|poured|mounted|laid|excavated|assembled|backfilled|achieved)\b/i
+const EMPTY = /^(?:none|null|unknown|not available|not specified)$/i
+const FUTURE = /\b(?:tomorrow|will|should|must|planned? to|plan to|needs? to be)\b/i
+const NOT_DONE = /\b(?:not installed|not completed|never installed|wasn't installed|were not installed|awaiting installation)\b/i
+const WEATHER = /\b(?:weather|rain|rainy|raining|snow|snowing|cloudy|overcast|sunny|windy|fog|temperature|degrees|celsius|drizzle)\b/i
+const STAFFING = /\b(?:(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|hundred)\s+(?:workers?|employees?|laborers?)|workers? (?:present|on site)|crew (?:present|on site))\b/i
+const INSPECTION = /\b(?:inspected|inspection|examined|checked|tested|discovered|measured|verified|quality check)\b/i
+const SAFETY = /\b(?:fell|fall|slipped|injured|injury|ambulance|taken to (?:the )?hospital|hospitalized|first aid|near miss|hazard|accident|safety barrier|guardrail|unsecured|platform collapsed|safety supervisor|staircase was closed)\b/i
+const EQUIPMENT = /\b(?:crane|excavator|forklift|lift|hoist|generator|pump|compressor|bulldozer|machine|machinery)\b/i
+const WORK = /\b(?:installed|completed|finished|constructed|poured|mounted|laid|excavated|assembled|backfilled|achieved)\b/i
 
 function normalize(value) {
   if (typeof value !== "string") return ""
-
   const result = value.replace(/\s+/g, " ").trim()
 
   return result &&
@@ -45,12 +25,7 @@ function normalize(value) {
 
 function unique(values) {
   if (!Array.isArray(values)) return []
-
-  return [
-    ...new Set(
-      values.map(normalize).filter(Boolean)
-    )
-  ]
+  return [...new Set(values.map(normalize).filter(Boolean))]
 }
 
 function format(values) {
@@ -65,9 +40,7 @@ function combine(...blocks) {
 }
 
 function filter(values, expression) {
-  return unique(values).filter(
-    value => expression.test(value)
-  )
+  return unique(values).filter(value => expression.test(value))
 }
 
 function group(details, field) {
@@ -82,55 +55,25 @@ export function aiReportToTemplate(
 ) {
   const details = report?.section_details || {}
 
-  const weather = filter(
-    details.weather,
-    WEATHER
-  )
-
-  const staffing = filter(
-    details.staffing,
-    STAFFING
-  )
+  const weather = filter(details.weather, WEATHER)
+  const staffing = filter(details.staffing, STAFFING)
 
   const inspections = filter(
     details.inspections,
     INSPECTION
-  ).filter(
-    s => !/^tomorrow\b/i.test(s)
-  )
+  ).filter(s => !/^tomorrow\b/i.test(s))
 
-  const delays = group(
-    details,
-    "delays"
-  )
+  const delays = group(details, "delays")
+  const instructions = group(details, "instructions")
+  const deliveries = group(details, "deliveries")
+  const equipmentFacts = filter(details.equipment, EQUIPMENT)
 
-  const instructions = group(
-    details,
-    "instructions"
-  )
-
-  const deliveries = group(
-    details,
-    "deliveries"
-  )
-
-  const equipmentFacts = filter(
-    details.equipment,
-    EQUIPMENT
-  )
-
-  // Avoid repeating an equipment sentence when a more
-  // specific equipment description is already available.
   const equipment = equipmentFacts.length > 1
     ? equipmentFacts.filter(s => !delays.includes(s))
     : equipmentFacts
 
-  const safety = filter(
-    details.safety,
-    SAFETY
-  )
+  const safety = filter(details.safety, SAFETY)
 
-  // Exclude future work and explicitly unfinished activities.
   const completed = filter(
     details.completed_work,
     WORK
@@ -138,30 +81,22 @@ export function aiReportToTemplate(
     s => !NOT_DONE.test(s) && !FUTURE.test(s)
   )
 
-  const issues = group(
-    details,
-    "issues"
-  )
+  const issues = group(details, "issues")
 
   const hasSections =
     report?.section_details &&
     Object.keys(details).length > 0
 
-  // Compatibility with older saved reports.
   const work = hasSections
     ? completed
     : unique(report?.completed_work).filter(
-        s =>
-          WORK.test(s) &&
-          !NOT_DONE.test(s) &&
-          !FUTURE.test(s)
+        s => WORK.test(s) && !NOT_DONE.test(s) && !FUTURE.test(s)
       )
 
   const problems = hasSections
     ? issues
     : unique(report?.issues)
 
-  // Don't repeat problems already covered by dedicated sections.
   const represented = new Set([
     ...inspections,
     ...delays,
@@ -178,24 +113,6 @@ export function aiReportToTemplate(
     report.workers_present >= 0
       ? report.workers_present
       : null
-
-  const warnings = unique(
-    report?.verification_warnings
-  )
-
-  const missing = unique(
-    report?.missing_information
-  )
-
-  const internal = combine(
-    warnings.length
-      ? `Check selected evidence:\n${format(warnings)}`
-      : "",
-
-    missing.length
-      ? `Information to confirm:\n${format(missing)}`
-      : ""
-  )
 
   const photos = Array.isArray(photoList)
     ? photoList
@@ -226,22 +143,14 @@ export function aiReportToTemplate(
     ),
 
     Begehung: format(inspections),
-
     Behinderung: format(delays),
-
     Anordnung: format(instructions),
-
     Tagesleistungen: format(work),
-
     Vorkommnis: format(safety),
-
     Lieferungen: format(deliveries),
-
     Geräte: format(equipment),
 
     "Bemerkung (extern)": format(extraIssues),
-
-    "Bemerkung (intern)": internal,
 
     "Fotos / Freigabe": photos.length
       ? `${photos.length} photo(s) attached. Approval not confirmed.`
@@ -255,10 +164,9 @@ export function aiReportToTemplate(
   const sections = Object.fromEntries(
     allowed
       .map(key => [key, allSections[key]])
-      .filter(([, body]) => body)
+      .filter(([, body]) => Boolean(body))
   )
 
-  // Headline comes from an actual evidence statement.
   const headline = (
     work[0] ||
     inspections[0] ||
@@ -286,23 +194,12 @@ export function aiReportToTemplate(
     report?.report_date || ""
   ).trim()
 
-  const date =
-    /^\d{4}-\d{2}-\d{2}$/.test(suppliedDate)
-      ? suppliedDate
-      : new Date().toISOString().slice(0, 10)
-
-  if (
-    !/^\d{4}-\d{2}-\d{2}$/.test(suppliedDate) &&
-    allowed.includes("Bemerkung (intern)")
-  ) {
-    sections["Bemerkung (intern)"] = combine(
-      sections["Bemerkung (intern)"],
-      "Work date unconfirmed; displayed date is draft creation date."
-    )
-  }
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(suppliedDate)
+    ? suppliedDate
+    : new Date().toISOString().slice(0, 10)
 
   return {
-    bautag: "Unspecified",
+    bautag: "",
     date,
     headline,
     summary,

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url"
 import { randomUUID } from "node:crypto"
 import { spawn } from "node:child_process"
 import { REPORT_TYPES } from "./classifier.js"
+import { registerReportTranslation } from "./reportTranslation.js"
 
 const app = express()
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
@@ -109,11 +110,7 @@ function persist() {
     pendingWrite = pendingWrite.catch(() => {}).then(async () => {
         const tmp = `${DATABASE}.tmp`
 
-        await fs.writeFile(
-            tmp,
-            JSON.stringify(db, null, 2)
-        )
-
+        await fs.writeFile(tmp, JSON.stringify(db, null, 2))
         await fs.rename(tmp, DATABASE)
     })
 
@@ -128,12 +125,7 @@ function category(ext) {
     return "pdf"
 }
 
-async function aiRequest(
-    url,
-    body,
-    headers,
-    timeout = 240000
-) {
+async function aiRequest(url, body, headers, timeout = 240000) {
     let response
 
     try {
@@ -187,14 +179,8 @@ async function whisperFile(file) {
     )
 }
 
-async function qwenText(
-    text,
-    photo = null,
-    mime = "image/jpeg"
-) {
-    const payload = {
-        text: text || ""
-    }
+async function qwenText(text, photo = null, mime = "image/jpeg") {
+    const payload = { text: text || "" }
 
     if (photo) {
         if (photo.length > 7 * 1024 * 1024) {
@@ -223,9 +209,7 @@ async function extractPath(filePath) {
                 path.join(REPO_ROOT, "ai", "extract_document.py"),
                 filePath
             ],
-            {
-                stdio: ["ignore", "pipe", "pipe"]
-            }
+            { stdio: ["ignore", "pipe", "pipe"] }
         )
 
         let out = ""
@@ -234,25 +218,18 @@ async function extractPath(filePath) {
 
         child.stdout.on("data", data => {
             if (out.length < 100001) {
-                out += data.toString().slice(
-                    0,
-                    100001 - out.length
-                )
+                out += data.toString().slice(0, 100001 - out.length)
             }
         })
 
         child.stderr.on("data", data => {
             if (err.length < 1000) {
-                err += data.toString().slice(
-                    0,
-                    1000 - err.length
-                )
+                err += data.toString().slice(0, 1000 - err.length)
             }
         })
 
         child.on("error", error => {
             ended = true
-
             resolve({
                 text: "",
                 warning: `Document extraction unavailable: ${error.message}`
@@ -288,22 +265,13 @@ async function extractDocument(file, ext) {
     }
 
     if (![".pdf", ".docx", ".msg"].includes(ext)) {
-        return {
-            text: "",
-            warning: null
-        }
+        return { text: "", warning: null }
     }
 
-    return extractPath(
-        path.join(FILES, file.diskName)
-    )
+    return extractPath(path.join(FILES, file.diskName))
 }
 
-async function qwenClassify(
-    text,
-    photo = null,
-    mime = "image/jpeg"
-) {
+async function qwenClassify(text, photo = null, mime = "image/jpeg") {
     if (!String(text || "").trim() && !photo) {
         return {
             types: [],
@@ -366,7 +334,6 @@ async function classifyItem(item, photo = null) {
         item.warnings.push(
             `AI classification unavailable: ${error.message}`
         )
-
         return null
     }
 }
@@ -376,9 +343,7 @@ function projectRecords(project, collection) {
         .filter(x => x.project === project)
         .sort((a, b) =>
             String(b.created_at || b.uploaded_at)
-                .localeCompare(
-                    String(a.created_at || a.uploaded_at)
-                )
+                .localeCompare(String(a.created_at || a.uploaded_at))
         )
 }
 
@@ -389,9 +354,10 @@ app.use(cors({
     ]
 }))
 
-app.use(express.json({
-    limit: "12mb"
-}))
+app.use(express.json({ limit: "12mb" }))
+
+// GERMAN REPORT TRANSLATION
+registerReportTranslation(app, QWEN_URL)
 
 // HEALTH
 app.get("/api/health", async (req, res) => {
@@ -403,26 +369,18 @@ app.get("/api/health", async (req, res) => {
             ["qwen", QWEN_URL]
         ].map(async ([name, url]) => {
             try {
-                const response = await fetch(
-                    `${url}/health`,
-                    {
-                        signal: AbortSignal.timeout(1500)
-                    }
-                )
+                const response = await fetch(`${url}/health`, {
+                    signal: AbortSignal.timeout(1500)
+                })
 
-                services[name] = response.ok
-                    ? "ready"
-                    : "error"
+                services[name] = response.ok ? "ready" : "error"
             } catch {
                 services[name] = "offline"
             }
         })
     )
 
-    res.json({
-        status: "running",
-        services
-    })
+    res.json({ status: "running", services })
 })
 
 // TRANSCRIBE
@@ -487,9 +445,7 @@ app.post(
                 })
             }
 
-            const report = await qwenText(
-                transcription.text
-            )
+            const report = await qwenText(transcription.text)
 
             res.json({
                 success: true,
@@ -523,9 +479,7 @@ app.post(
             })
         }
 
-        const ext = path.extname(
-            req.file.originalname
-        ).toLowerCase()
+        const ext = path.extname(req.file.originalname).toLowerCase()
 
         if (!extensions.has(ext)) {
             return res.status(415).json({
@@ -564,8 +518,7 @@ app.post(
             if (audioExt.has(ext)) {
                 try {
                     item.transcription = await whisperFile(req.file)
-                    item.extracted_text =
-                        item.transcription.text || ""
+                    item.extracted_text = item.transcription.text || ""
                 } catch (error) {
                     item.warnings.push(
                         `Whisper failed: ${error.message}. Retry processing later.`
@@ -590,11 +543,7 @@ app.post(
                     )
                 }
             } else {
-                const extracted = await extractDocument(
-                    item,
-                    ext
-                )
-
+                const extracted = await extractDocument(item, ext)
                 item.extracted_text = extracted.text
 
                 if (extracted.warning) {
@@ -604,9 +553,7 @@ app.post(
 
             item.classification = await classifyItem(
                 item,
-                imageExt.has(ext)
-                    ? req.file.buffer
-                    : null
+                imageExt.has(ext) ? req.file.buffer : null
             ) || {
                 types: [],
                 scores: {},
@@ -644,22 +591,16 @@ app.post(
 app.post("/api/evidence/reclassify", async (req, res, next) => {
     try {
         const project = projectName(req.body?.project)
-
         const selected = db.evidence.filter(
             item => item.project === project
         )
 
         for (const item of selected) {
             const photo = item.category === "photo"
-                ? await fs.readFile(
-                    path.join(FILES, item.diskName)
-                )
+                ? await fs.readFile(path.join(FILES, item.diskName))
                 : null
 
-            const proposal = await classifyItem(
-                item,
-                photo
-            )
+            const proposal = await classifyItem(item, photo)
 
             if (proposal) {
                 item.classification = proposal
@@ -737,10 +678,7 @@ app.delete("/api/evidence/:id", async (req, res, next) => {
         const [item] = db.evidence.splice(index, 1)
 
         await persist()
-        await fs.rm(
-            path.join(FILES, item.diskName),
-            { force: true }
-        )
+        await fs.rm(path.join(FILES, item.diskName), { force: true })
 
         res.json({ success: true })
     } catch (error) {
@@ -757,13 +695,8 @@ app.get("/api/evidence/:id/file", async (req, res, next) => {
 
         if (!item) return res.sendStatus(404)
 
-        res.type(
-            item.mime || "application/octet-stream"
-        )
-
-        res.sendFile(
-            path.join(FILES, item.diskName)
-        )
+        res.type(item.mime || "application/octet-stream")
+        res.sendFile(path.join(FILES, item.diskName))
     } catch (error) {
         next(error)
     }
@@ -780,7 +713,6 @@ app.post("/api/drafts/generate", async (req, res, next) => {
         } = req.body || {}
 
         const project = projectName(projectInput)
-
         const ids = Array.isArray(evidenceIds)
             ? evidenceIds.slice(0, 30)
             : []
@@ -979,9 +911,7 @@ app.post(
             })
         }
 
-        const ext = path.extname(
-            req.file.originalname
-        ).toLowerCase()
+        const ext = path.extname(req.file.originalname).toLowerCase()
 
         if (![".pdf", ".docx"].includes(ext)) {
             return res.status(415).json({
@@ -1067,7 +997,6 @@ app.delete("/api/repository/:id", async (req, res, next) => {
         const [item] = db.documents.splice(index, 1)
 
         await persist()
-
         await fs.rm(
             path.join(DOCS, item.diskName),
             { force: true }
@@ -1095,16 +1024,8 @@ app.post("/api/knowledge/search", async (req, res, next) => {
             ? req.body.history.slice(-6)
             : []
 
-        const evidence = projectRecords(
-            project,
-            db.evidence
-        )
-
-        const documents = projectRecords(
-            project,
-            db.documents
-        )
-
+        const evidence = projectRecords(project, db.evidence)
+        const documents = projectRecords(project, db.documents)
         const schedule = db.schedule.filter(
             x => x.project === project
         )
@@ -1141,7 +1062,7 @@ app.post("/api/knowledge/search", async (req, res, next) => {
             }
         }
 
-        // Extract the text of previously exported PDF/DOCX reports.
+        // Extract text from previously exported PDF/DOCX reports.
         for (const document of documents) {
             if (
                 document.extracted_text === undefined &&
@@ -1223,8 +1144,8 @@ app.post("/api/knowledge/search", async (req, res, next) => {
             })
         }
 
-        // Retrieval prioritization only. Qwen handles the actual
-        // semantic reasoning and source-grounded answer generation.
+        // Retrieval prioritization only.
+        // Qwen handles semantic reasoning and answer generation.
         const stopWords = new Set([
             "the", "and", "what", "were", "when", "show",
             "tell", "about", "project", "please", "from",
@@ -1253,9 +1174,7 @@ app.post("/api/knowledge/search", async (req, res, next) => {
                 ) + Math.max(0, 4 - index / 10)
         })
 
-        sources.sort(
-            (a, b) => b.score - a.score
-        )
+        sources.sort((a, b) => b.score - a.score)
 
         const chosen = sources.slice(0, 30).map(
             (source, index) => ({
@@ -1361,17 +1280,11 @@ app.put("/api/schedule", async (req, res, next) => {
             Trade: String(value.Trade || "").slice(0, 100),
             "Planned Progress": Math.max(
                 0,
-                Math.min(
-                    100,
-                    Number(value["Planned Progress"]) || 0
-                )
+                Math.min(100, Number(value["Planned Progress"]) || 0)
             ),
             "Actual Progress": Math.max(
                 0,
-                Math.min(
-                    100,
-                    Number(value["Actual Progress"]) || 0
-                )
+                Math.min(100, Number(value["Actual Progress"]) || 0)
             ),
             "Planned Completion": String(
                 value["Planned Completion"] || ""
@@ -1397,10 +1310,7 @@ app.put("/api/schedule", async (req, res, next) => {
 
 // ERROR HANDLER
 app.use((error, req, res, next) => {
-    console.error(
-        `[${req.method} ${req.path}]`,
-        error
-    )
+    console.error(`[${req.method} ${req.path}]`, error)
 
     if (error instanceof multer.MulterError) {
         return res.status(400).json({

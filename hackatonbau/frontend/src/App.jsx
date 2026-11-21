@@ -34,6 +34,7 @@ import MeetingIntelligenceTab from "./components/MeetingIntelligenceTab";
 import ProjectAssistantDrawer from "./components/ProjectAssistantDrawer";
 import { EvidencePreviewModal, RepositoryDocumentModal } from "./components/Modals";
 import ToastContainer from "./components/ToastContainer";
+import { translateReportTemplate } from "./utils/translateReport"
 
 const TABS = [
   { id: "workflow", label: "🏗️ Daily Documentation" },
@@ -372,52 +373,207 @@ export default function App() {
   }, []);
 
   // Draft generation
-  const handleGenerateDraft = useCallback(async ({kind,noticeType=null,noticeSummary="",attachments=null,overrideReportType=null,overrideClarification=null}) => {
-    setIsGenerating(true);
-    try {
-      const chosenReportType=overrideReportType || reportType || DAILY_REPORT;
-      const selected=evidenceNames.filter(n=>(assignedReportTypes[n]||[]).includes(chosenReportType));
-      const ids=selected.map(n=>uploadedFileMap[n]?.id).filter(Boolean);
-      const lang=REPORT_LANGUAGES[reportLanguage] || "en";
-      const created=formatNowTimestamp(lang);
-      const docId=`BD-${formatIdStamp()}`;
-      let draft, docType=chosenReportType;
-      if(kind==="Notice" || kind==="Delay notice") {
-        const notes=noticeSummary.trim() || freeformNotes.trim();
-        if(!notes) { addToast("Write a factual notice summary before drafting","⚠️");return; }
-        docType=noticeType || "Delay Notice";
-        draft=noticeToEditorText(project,overrideClarification || clarification,created,docType,notes,attachments,`SC-${formatIdStamp()}`);
-        setLlmReportJson(null);
-        setLlmPrompt(null);
-      } else if(ids.length || freeformNotes.trim()) {
-        const answer=await api("/api/drafts/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({project,reportType:chosenReportType,evidenceIds:ids,notes:freeformNotes})});
-        const ai=answer.report;
-        const realPhotos=(photosByType[chosenReportType] || []).filter(([,name])=>Boolean(uploadedFileMap[name]?.id));
-        const template=aiReportToTemplate(ai,chosenReportType,realPhotos,selected);
-        draft=reportToEditorText(template,project,lang,created,REPORT_TYPES[chosenReportType].titles[lang],docId,"Draft for Review");
-        setLlmReportJson(JSON.stringify(ai,null,2));
-        setLlmPrompt({reportType:chosenReportType,language:lang,warnings:answer.warnings});
-        if(ai.verification_warnings?.length) addToast(`Generated with ${ai.verification_warnings.length} review warning(s)`,"⚠️");
-        else addToast("Draft generated from uploaded evidence","✅");
-        if(lang==="de") addToast("German section headers selected; review English AI text before export","⚠️");
-      } else if(sampleNames.length) {
-        const demo=simulateLlmReport(lang,chosenReportType,overrideClarification||clarification||{hours:3,supplier:"DEMO supplier",impact:"Demo only"},photosByType[chosenReportType]||[],created,getUploadTime);
-        draft=reportToEditorText(parseLlmReport(demo),project,lang,created,REPORT_TYPES[chosenReportType].titles[lang],docId,"SAMPLE / NOT VERIFIED");
-        setLlmReportJson(demo);
-        setLlmPrompt({reportType:chosenReportType,language:lang,demo:true});
-        addToast("Demo sample draft generated. Not based on uploaded evidence","⚠️");
-      } else { addToast("Upload real evidence or enter notes before generating a report","⚠️"); return; }
-      setReportType(chosenReportType);
-      setGeneratedDocument(docType);
-      setLockedTimestamp(created);
-      setLockedDocId(docId);
-      setDocumentDraft(draft);
-      setSavedDraft(null);
-      setExported(false);
-      setExportSuccessMsg(null);
-    } catch(err) { addToast(`Report failed: ${err.message}`,"⚠️"); }
-    finally { setIsGenerating(false); }
-  },[clarification,project,reportType,reportLanguage,evidenceNames,assignedReportTypes,uploadedFileMap,freeformNotes,photosByType,sampleNames,getUploadTime,addToast]);
+  const handleGenerateDraft = useCallback(async ({
+  kind,
+  noticeType = null,
+  noticeSummary = "",
+  attachments = null,
+  overrideReportType = null,
+  overrideClarification = null
+}) => {
+  setIsGenerating(true)
+
+  try {
+    const chosenReportType = overrideReportType || reportType || DAILY_REPORT
+
+    const selected = evidenceNames.filter(name =>
+      (assignedReportTypes[name] || []).includes(chosenReportType)
+    )
+
+    const ids = selected
+      .map(name => uploadedFileMap[name]?.id)
+      .filter(Boolean)
+
+    const lang = REPORT_LANGUAGES[reportLanguage] || "en"
+    const created = formatNowTimestamp(lang)
+    const docId = `BD-${formatIdStamp()}`
+
+    let draft
+    let docType = chosenReportType
+
+    if (kind === "Notice" || kind === "Delay notice") {
+      const notes = noticeSummary.trim() || freeformNotes.trim()
+
+      if (!notes) {
+        addToast(
+          "Write a factual notice summary before drafting",
+          "⚠️"
+        )
+        return
+      }
+
+      docType = noticeType || "Delay Notice"
+
+      draft = noticeToEditorText(
+        project,
+        overrideClarification || clarification,
+        created,
+        docType,
+        notes,
+        attachments,
+        `SC-${formatIdStamp()}`
+      )
+
+      setLlmReportJson(null)
+      setLlmPrompt(null)
+
+    } else if (ids.length || freeformNotes.trim()) {
+      // Step 1: Generate structured facts with Qwen.
+      const answer = await api("/api/drafts/generate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          project,
+          reportType: chosenReportType,
+          evidenceIds: ids,
+          notes: freeformNotes
+        })
+      })
+
+      const ai = answer.report
+
+      const realPhotos = (
+        photosByType[chosenReportType] || []
+      ).filter(([, name]) =>
+        Boolean(uploadedFileMap[name]?.id)
+      )
+
+      // Step 2: Build the report using the extracted facts.
+      let template = aiReportToTemplate(
+        ai,
+        chosenReportType,
+        realPhotos,
+        selected
+      )
+
+      // Step 3: Translate the entire report if German is selected.
+      // Uses the existing Qwen3 server.
+      if (lang === "de") {
+        template = await translateReportTemplate(template)
+      }
+
+      // Step 4: Convert the report into the editable document.
+      draft = reportToEditorText(
+        template,
+        project,
+        lang,
+        created,
+        REPORT_TYPES[chosenReportType].titles[lang],
+        docId,
+        lang === "de"
+          ? "Entwurf zur Prüfung"
+          : "Draft for Review"
+      )
+
+      setLlmReportJson(JSON.stringify(ai, null, 2))
+
+      setLlmPrompt({
+        reportType: chosenReportType,
+        language: lang,
+        warnings: answer.warnings
+      })
+
+      if (lang === "de") {
+        addToast(
+          "German report generated. Review before export.",
+          "✅"
+        )
+      } else {
+        addToast(
+          "Draft generated from uploaded evidence",
+          "✅"
+        )
+      }
+
+    } else if (sampleNames.length) {
+      const demo = simulateLlmReport(
+        lang,
+        chosenReportType,
+        overrideClarification || clarification || {
+          hours: 3,
+          supplier: "DEMO supplier",
+          impact: "Demo only"
+        },
+        photosByType[chosenReportType] || [],
+        created,
+        getUploadTime
+      )
+
+      draft = reportToEditorText(
+        parseLlmReport(demo),
+        project,
+        lang,
+        created,
+        REPORT_TYPES[chosenReportType].titles[lang],
+        docId,
+        "SAMPLE / NOT VERIFIED"
+      )
+
+      setLlmReportJson(demo)
+
+      setLlmPrompt({
+        reportType: chosenReportType,
+        language: lang,
+        demo: true
+      })
+
+      addToast(
+        "Demo sample draft generated. Not based on uploaded evidence",
+        "⚠️"
+      )
+
+    } else {
+      addToast(
+        "Upload real evidence or enter notes before generating a report",
+        "⚠️"
+      )
+      return
+    }
+
+    // Save the generated draft in React state.
+    setReportType(chosenReportType)
+    setGeneratedDocument(docType)
+    setLockedTimestamp(created)
+    setLockedDocId(docId)
+    setDocumentDraft(draft)
+    setSavedDraft(null)
+    setExported(false)
+    setExportSuccessMsg(null)
+
+  } catch (error) {
+    addToast(
+      `Report failed: ${error.message}`,
+      "⚠️"
+    )
+  } finally {
+    setIsGenerating(false)
+  }
+}, [
+  clarification,
+  project,
+  reportType,
+  reportLanguage,
+  evidenceNames,
+  assignedReportTypes,
+  uploadedFileMap,
+  freeformNotes,
+  photosByType,
+  sampleNames,
+  getUploadTime,
+  addToast
+])
 
   const handleSaveDraft = useCallback(() => {
     setSavedDraft({ text: documentDraft, time: formatTimeHHMM() });
