@@ -160,9 +160,10 @@ export function evidenceCategory(fileName) {
   const lower = fileName.toLowerCase();
   const extension = lower.includes(".") ? lower.split(".").pop() : "";
   if (lower.includes("hand") || lower.includes("scan")) return "handwritten";
-  if (["jpg", "jpeg", "png"].includes(extension)) return "photo";
-  if (["mp3", "wav"].includes(extension)) return "voice";
-  if (extension === "msg") return "email";
+  if (["jpg", "jpeg", "png", "webp"].includes(extension)) return "photo";
+  if (["mp3", "wav", "webm", "m4a", "ogg", "flac"].includes(extension)) return "voice";
+  if (["msg", "eml"].includes(extension)) return "email";
+  if (["txt", "md", "csv", "json"].includes(extension)) return "text";
   if (extension === "docx") return "word";
   return lower.includes("delivery") ? "delivery" : "pdf";
 }
@@ -175,6 +176,7 @@ export function evidenceFileTypeLabel(fileName) {
     voice: "Audio",
     email: "Email",
     word: "Word Document",
+    text: "Text File",
     delivery: "PDF Document",
     pdf: "PDF Document",
     handwritten: "Handwritten Note",
@@ -238,62 +240,22 @@ export function photoRefs(ids, singular, plural) {
 }
 
 export function documentSlug(documentType) {
-  return (
-    documentType
-      .split(/\s+/)
-      .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-      .join("_")
-      .replace(/[^A-Za-z0-9_]/g, "_") + "_20_Nov"
-  );
+  const now = new Date();
+  const stamp = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,"0")}${String(now.getDate()).padStart(2,"0")}_${String(now.getHours()).padStart(2,"0")}${String(now.getMinutes()).padStart(2,"0")}`;
+  return `${documentType.replace(/[^A-Za-z0-9]+/g,"_").replace(/^_|_$/g,"")}_${stamp}`;
 }
 
 export function makeNotice(noticeType, issue, attachments = null) {
-  const subjects = {
-    "Delay Notice": "Notice of potential project delay – concrete delivery disruption",
-    "Additional Cost Notice": "Notice of additional cost claim – standby & acceleration resources",
-    "Defect Notice": "Formal defect notice – non-conforming work requiring rectification",
-    "Notice of Concern": "Formal notice of concern – site safety and schedule risk",
-  };
-  const impacts = {
-    "Delay Notice":
-      "The reported event directly affects the current concrete works sequence and places the milestone planned for 22 November 2026 at risk.",
-    "Additional Cost Notice":
-      "Standby time for the 36 m concrete pump, site crew waiting hours, and out-of-sequence works incur unbudgeted direct costs.",
-    "Defect Notice":
-      "The identified defect fails to meet approved drawings and DIN/contractual specifications and must be rectified before follow-on trades proceed.",
-    "Notice of Concern":
-      "Unresolved site conditions expose personnel to avoidable safety hazards and risk cascading schedule disruption across active trades.",
-  };
-  const actions = {
-    "Delay Notice":
-      "Please confirm the revised delivery schedule, submit a written recovery proposal, and identify mitigation measures within 24 hours.",
-    "Additional Cost Notice":
-      "Please acknowledge receipt of this cost notification, verify the attached site standby records, and confirm commercial review within 5 working days.",
-    "Defect Notice":
-      "Please submit a corrective method statement and complete full rectification works with documented re-inspection before covering or continuing.",
-    "Notice of Concern":
-      "Please attend site urgently, implement immediate preventive controls, and provide written confirmation of corrective actions within 24 hours.",
-  };
-
-  const keys = Object.keys(subjects);
-  const selected = subjects[noticeType] ? noticeType : "Delay Notice";
-  const now = new Date();
-  const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
-  const reference = `SC-${ymd}-OTM-0${keys.indexOf(selected) + 1}`;
-  const attachedList =
-    attachments && attachments.length
-      ? attachments
-      : ["Delivery_Note.pdf", "Supplier_Email.msg", "Facade_Photo_01.jpg"];
-
+  const selected = ["Delay Notice","Additional Cost Notice","Defect Notice","Notice of Concern"].includes(noticeType) ? noticeType : "Notice of Concern";
   return {
-    "Notice Type": selected,
-    Subject: subjects[selected],
-    Reference: reference,
-    Date: formatTodayDisplay(),
-    Description: (issue || "").trim() || "Observed site event documented from today's evidence.",
-    Impact: impacts[selected],
-    "Required Action": actions[selected],
-    Attachments: attachedList.join(", "),
+    "Notice Type":selected,
+    Subject:`${selected} – site event requiring review`,
+    Reference:`SC-${formatIdStamp()}`,
+    Date:formatTodayDisplay(),
+    Description:String(issue||"").trim() || "Event description not provided; review required.",
+    Impact:"Impact has not been independently verified. Confirm against the actual project programme and evidence.",
+    "Required Action":"Review the supporting evidence, confirm responsible party and corrective measures, then approve the notice before issuing.",
+    Attachments:Array.isArray(attachments)&&attachments.length?attachments.join(", "):"No supporting files selected"
   };
 }
 
@@ -475,26 +437,9 @@ export function reportToEditorText(
   return lines.join("\n");
 }
 
-export function noticeToEditorText(
-  project,
-  clarification,
-  created,
-  noticeType = "Delay Notice",
-  customDescription = "",
-  attachments = null,
-  docId = null
-) {
-  const hours = clarification ? clarification.hours : 3;
-  const supplier = clarification ? clarification.supplier : "ABC Concrete";
-  const impactVal = clarification ? clarification.impact : "Yes — Critical Path";
-  const defaultIssue = `${supplier} delivered ready-mix concrete ${hours} hours later than the agreed delivery slot (08:00) on 20 Nov 2026.`;
-  const issueText = customDescription.trim() || defaultIssue;
-  const notice = makeNotice(noticeType, issueText, attachments);
-  const impactText =
-    String(impactVal).startsWith("Yes") || noticeType !== "Delay Notice"
-      ? notice.Impact
-      : "No schedule impact has been observed so far. The event is recorded for contractual purposes.";
-  const names = HEADER_FIELDS.en;
+export function noticeToEditorText(project, clarification, created, noticeType="Delay Notice", customDescription="", attachments=null, docId=null) {
+  const notice=makeNotice(noticeType,customDescription,attachments);
+  const names=HEADER_FIELDS.en;
   return [
     `${names.title}: ${notice["Notice Type"]}`,
     `${names.doc_id}: ${docId || notice.Reference}`,
@@ -503,28 +448,12 @@ export function noticeToEditorText(
     `${names.created}: ${created}`,
     `${names.status}: Draft for Review`,
     `${names.headline}: ${notice.Subject}`,
-    `${names.summary}: Formal ${notice["Notice Type"].toLowerCase()} issued for ${project} (${notice.Date}).`,
-    "",
-    "## Reference Number",
-    notice.Reference,
-    "",
-    "## Addressee",
-    supplier,
-    "",
-    "## Description",
-    notice.Description,
-    "",
-    "## Impact",
-    impactText,
-    "",
-    "## Requested Action",
-    notice["Required Action"],
-    "",
-    "## Attachments",
-    notice.Attachments,
-    "",
-    "## Remark (internal)",
-    `(i) Review commercial and schedule exposure (${hours} h standby); contractual responsibility open.`,
+    `${names.summary}: Draft notice based on the reported event; not yet issued.`,
+    "", "## Description",notice.Description,
+    "", "## Impact",notice.Impact,
+    "", "## Required Action",notice["Required Action"],
+    "", "## Attachments",notice.Attachments,
+    "", "## Remark (internal)","Draft only. Confirm factual accuracy, contractual obligations, dates, recipients and referenced evidence before issue."
   ].join("\n");
 }
 
@@ -840,69 +769,29 @@ export function generateDeviationAlerts(activities) {
 
 // Meeting Intelligence extractor
 export function extractMeetingIntelligence(rawText) {
-  const lines = (rawText || "")
-    .split(/\r?\n/)
-    .map((l) => l.replace(/^[\s\-•\t]+|[\s\-•\t]+$/g, ""))
-    .filter(Boolean);
-
-  const decisionsFound = lines
-    .filter((l) => l.toLowerCase().startsWith("decision:"))
-    .map((l) => l.slice(l.indexOf(":") + 1).trim());
-
-  const actionsFound = lines
-    .filter((l) => l.toLowerCase().startsWith("action:"))
-    .map((l) => l.slice(l.indexOf(":") + 1).trim());
-
-  const summary = { ...DEFAULT_MEETING_SUMMARY };
-  if (lines.length) summary.title = lines[0].slice(0, 80);
-  if (decisionsFound.length) {
-    summary.key_decisions = decisionsFound;
-    summary.critical_outcomes = decisionsFound.slice(0, 3);
-  }
-
-  let extractedActions = actionsFound.map((rawAction) => {
-    let owner = "Unassigned";
-    let task = rawAction;
-    let due = "22 Nov 2026";
-    if (rawAction.includes(" to ")) {
-      const idx = rawAction.indexOf(" to ");
-      const possibleOwner = rawAction.slice(0, idx).trim();
-      if (possibleOwner.split(/\s+/).length <= 4) {
-        owner = possibleOwner;
-        task = rawAction.slice(idx + 4).trim();
-      }
-    }
-    const lowerTask = task.toLowerCase();
-    const byIdx = lowerTask.lastIndexOf(" by ");
-    if (byIdx !== -1) {
-      due = task.slice(byIdx + 4).trim().replace(/\.$/, "");
-      task = task.slice(0, byIdx).trim();
-    }
-    return {
-      Owner: owner,
-      "Action Item": task ? task.charAt(0).toUpperCase() + task.slice(1) : rawAction,
-      "Due Date": due,
-      Status: "Open",
-    };
+  const lines=(rawText||"").split(/\r?\n/).map(x=>x.replace(/^[\s\-•\t]+|[\s\-•\t]+$/g,"")).filter(Boolean);
+  const decisionLines=lines.filter(x=>/^decision\s*:/i.test(x)).map(x=>x.replace(/^decision\s*:\s*/i,"").trim());
+  const actionLines=lines.filter(x=>/^action\s*:/i.test(x)).map(x=>x.replace(/^action\s*:\s*/i,"").trim());
+  const riskLines=lines.filter(x=>/^risk\s*:/i.test(x)).map(x=>x.replace(/^risk\s*:\s*/i,"").trim());
+  const issueLines=lines.filter(x=>/^issue\s*:/i.test(x)).map(x=>x.replace(/^issue\s*:\s*/i,"").trim());
+  const prose=lines.filter(x=>! /^(action|decision|risk|issue)\s*:/i.test(x));
+  const actions=actionLines.map(raw=>{
+    const ownerMatch=raw.match(/^(.{1,65}?)\s+to\s+(.+)$/i);
+    const owner=ownerMatch?ownerMatch[1]:"Unassigned";
+    const whole=ownerMatch?ownerMatch[2]:raw;
+    const dueMatch=whole.match(/\s+by\s+([^,.]+)\.?$/i);
+    return {Owner:owner,"Action Item":(dueMatch?whole.slice(0,dueMatch.index):whole).trim(),"Due Date":dueMatch?dueMatch[1]:"Not specified",Status:"Open"};
   });
-
-  if (!extractedActions.length) {
-    extractedActions = DEFAULT_ACTION_ITEMS.map((r) => ({ ...r }));
-  }
-
-  const newDecisions = DEFAULT_DECISION_LOG.map((r) => ({ ...r }));
-  const existingTexts = new Set(newDecisions.map((d) => d.Decision.toLowerCase()));
-  for (const dec of decisionsFound) {
-    if (!existingTexts.has(dec.toLowerCase())) {
-      newDecisions.unshift({
-        Date: formatTodayDisplay(),
-        Topic: "Extracted from Meeting Minutes",
-        Decision: dec,
-        "Decision Owner": "John Smith (Site Manager)",
-        "Supporting Documentation": "Meeting_Minutes.docx",
-      });
-    }
-  }
-
-  return { summary, actions: extractedActions, decisions: newDecisions };
+  const decisions=decisionLines.map(s=>({Date:formatTodayDisplay(),Topic:"From uploaded meeting notes",Decision:s,"Decision Owner":"Not specified","Supporting Documentation":"Meeting transcript"}));
+  return {
+    summary: {
+      title:lines[0]?.slice(0,100) || "Meeting notes",
+      date:formatTodayDisplay(),
+      summary:prose.slice(0,5).join(" ") || "No narrative summary was provided. Review the full notes.",
+      critical_outcomes:decisionLines.slice(0,5),
+      key_decisions:decisionLines,
+      risks:riskLines,
+      open_issues:issueLines
+    },actions,decisions
+  };
 }

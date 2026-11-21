@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { api, formRequest } from "../api/client";
 import { Plus, Sparkles, Trash2, Upload } from "lucide-react";
 import {
   ACTION_STATUS_OPTIONS,
@@ -10,10 +11,12 @@ import {
 import { extractMeetingIntelligence, formatTodayDisplay } from "../utils/documentUtils";
 
 export default function MeetingIntelligenceTab({ project, onToast }) {
-  const [notesInput, setNotesInput] = useState(SAMPLE_MEETING_TRANSCRIPT);
-  const [summary, setSummary] = useState(DEFAULT_MEETING_SUMMARY);
-  const [actions, setActions] = useState(() => DEFAULT_ACTION_ITEMS.map((r) => ({ ...r })));
-  const [decisions, setDecisions] = useState(() => DEFAULT_DECISION_LOG.map((r) => ({ ...r })));
+  const [notesInput, setNotesInput] = useState("");
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [loadedProject, setLoadedProject] = useState(null);
+  const [summary, setSummary] = useState({title:"No meeting analyzed yet",date:"",summary:"Paste notes or upload a transcript to begin",critical_outcomes:[],key_decisions:[],risks:[],open_issues:[]});
+  const [actions, setActions] = useState([]);
+  const [decisions, setDecisions] = useState([]);
 
   const [selectedOwner, setSelectedOwner] = useState("All owners");
   const [selectedStatus, setSelectedStatus] = useState("All statuses");
@@ -21,31 +24,51 @@ export default function MeetingIntelligenceTab({ project, onToast }) {
 
   const [newDecision, setNewDecision] = useState({
     topic: "",
-    owner: "John Smith (Site Manager)",
+    owner: "Not specified",
     decision: "",
     docs: "",
   });
 
-  const handleFileUpload = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = String(reader.result || "");
-      if (text.trim()) {
-        setNotesInput(text);
-        onToast(`Loaded ${file.name} into meeting notes`, "📄");
+  useEffect(()=>{
+    setLoadedProject(null);
+    try {
+      const saved=JSON.parse(localStorage.getItem(`baudackel-meetings:${project}`)||"null");
+      if(saved) {setNotesInput(saved.notes||"");setSummary(saved.summary);setActions(saved.actions||[]);setDecisions(saved.decisions||[])}
+      else {setNotesInput("");setSummary({title:"No meeting analyzed yet",date:"",summary:"Paste notes or upload a transcript to begin",critical_outcomes:[],key_decisions:[],risks:[],open_issues:[]});setActions([]);setDecisions([])}
+    } catch { /* invalid old local state */ }
+    setLoadedProject(project);
+  },[project]);
+  useEffect(()=>{
+    if(loadedProject !== project)return;
+    localStorage.setItem(`baudackel-meetings:${project}`,JSON.stringify({notes:notesInput,summary,actions,decisions}));
+  },[loadedProject,project,notesInput,summary,actions,decisions]);
+
+  const handleFileUpload = async e => {
+    const file=e.target.files?.[0];
+    if(!file)return;
+    setIsProcessing(true);
+    try {
+      if(/\.(txt|md)$/i.test(file.name))setNotesInput(await file.text());
+      else if(/\.(wav|mp3|m4a|webm|ogg)$/i.test(file.name)) {
+        const result=await formRequest("/api/transcribe",{},file,"audio");
+        setNotesInput(result.transcription.text || "");
+      } else {
+        const result=await formRequest("/api/evidence",{project},file);
+        if(!result.item.extracted_text?.trim())throw new Error(result.item.warnings?.join("; ") || "No readable text extracted");
+        setNotesInput(result.item.extracted_text);
       }
-    };
-    reader.readAsText(file);
+      onToast(`Imported meeting notes from ${file.name}`, "✅");
+    } catch(error) {onToast(`Meeting import failed: ${error.message}`,"⚠️");}
+    finally {setIsProcessing(false);e.target.value=""}
   };
 
   const handleGenerate = () => {
+    if (!notesInput.trim()) {onToast("Enter meeting notes before extracting","⚠️");return}
     const extracted = extractMeetingIntelligence(notesInput);
     setSummary(extracted.summary);
     setActions(extracted.actions);
     setDecisions(extracted.decisions);
-    onToast("Meeting summary, action items and decisions updated", "✅");
+    onToast("Extracted explicitly marked decisions, actions, risks and issues from the supplied notes", "✅");
   };
 
   const updateAction = (idx, field, value) => {
@@ -55,7 +78,7 @@ export default function MeetingIntelligenceTab({ project, onToast }) {
   const addActionRow = () => {
     setActions((prev) => [
       ...prev,
-      { Owner: "John Smith (Site Manager)", "Action Item": "", "Due Date": "25 Nov 2026", Status: "Open" },
+      { Owner: "Unassigned", "Action Item": "", "Due Date": "Not specified", Status: "Open" },
     ]);
   };
 
@@ -98,12 +121,12 @@ export default function MeetingIntelligenceTab({ project, onToast }) {
         Date: formatTodayDisplay(),
         Topic: newDecision.topic.trim(),
         Decision: newDecision.decision.trim(),
-        "Decision Owner": newDecision.owner.trim() || "John Smith",
+        "Decision Owner": newDecision.owner.trim() || "Not specified",
         "Supporting Documentation": newDecision.docs.trim() || "Meeting record",
       },
       ...prev,
     ]);
-    setNewDecision({ topic: "", owner: "John Smith (Site Manager)", decision: "", docs: "" });
+    setNewDecision({ topic: "", owner: "Not specified", decision: "", docs: "" });
     onToast("Decision recorded in log", "✅");
   };
 
@@ -114,7 +137,7 @@ export default function MeetingIntelligenceTab({ project, onToast }) {
         <h2 className="section-title">Meeting Summary Generation</h2>
         <p className="caption">
           Paste meeting notes, transcripts, or upload minutes for <strong>{project}</strong> to
-          generate a structured meeting record.
+          extract a structured meeting record. Use lines beginning with Action:, Decision:, Risk:, or Issue: for reliable extraction.
         </p>
       </div>
 
@@ -132,12 +155,12 @@ export default function MeetingIntelligenceTab({ project, onToast }) {
           </div>
           <div className="stack">
             <div>
-              <label className="field-label">Upload meeting minutes (.txt, .md)</label>
+              <label className="field-label">Upload meeting minutes or audio (.txt, .md, .pdf, .docx, .wav, .mp3)</label>
               <label className="btn btn-block" style={{ cursor: "pointer" }}>
-                <Upload size={15} /> Choose .txt or .md file
+                <Upload size={15} /> {isProcessing ? "Processing…" : "Choose evidence file"}
                 <input
                   type="file"
-                  accept=".txt,.md"
+                  accept=".txt,.md,.pdf,.docx,.wav,.mp3,.webm,.m4a,.ogg"
                   style={{ display: "none" }}
                   onChange={handleFileUpload}
                 />
@@ -156,7 +179,7 @@ export default function MeetingIntelligenceTab({ project, onToast }) {
         </div>
         <div>
           <button className="btn btn-primary" onClick={handleGenerate}>
-            <Sparkles size={15} /> Generate Meeting Summary &amp; Extract Items
+            <Sparkles size={15} /> Extract Meeting Summary &amp; Items
           </button>
         </div>
       </div>
@@ -215,7 +238,7 @@ export default function MeetingIntelligenceTab({ project, onToast }) {
           <div>
             <h2 className="section-title">Action Item Extraction</h2>
             <p className="caption">
-              Automatically extracted action items. Edit responsible party, description, due date, or
+              Action items extracted from explicit Action: lines in meeting notes. Edit responsible party, description, due date, or
               status directly — changes sync to the Responsibility Matrix below.
             </p>
           </div>
@@ -298,7 +321,7 @@ export default function MeetingIntelligenceTab({ project, onToast }) {
           </span>
         </div>
         <p className="caption">
-          Automatically synced with extracted meeting actions. Filter by owner or status.
+          Synced with extracted and manually entered meeting actions. Filter by owner or status.
         </p>
       </div>
 

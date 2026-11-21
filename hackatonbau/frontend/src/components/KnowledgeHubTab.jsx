@@ -37,12 +37,16 @@ export default function KnowledgeHubTab({
   const [repoSearch, setRepoSearch] = useState("");
   const [selectedType, setSelectedType] = useState("All types");
 
-  const runSearch = (rawQuery) => {
+  const [isSearching, setIsSearching] = useState(false);
+  const runSearch = async (rawQuery) => {
     const clean = rawQuery.trim();
     if (!clean) return;
     setSearchQuery(clean);
     onRecordSearch(clean);
-    setLastResult({ query: clean, result: answerQuestionFn(clean) });
+    setIsSearching(true);
+    try { const result = await answerQuestionFn(clean); setLastResult({query:clean,result}); }
+    catch(error) { setLastResult({query:clean,result:{answer:`Search failed: ${error.message}`,documents:[],confidence:0}}); }
+    finally { setIsSearching(false); }
   };
 
   const docTypes = useMemo(
@@ -65,6 +69,7 @@ export default function KnowledgeHubTab({
   }, [repositoryDocs, repoSearch, selectedType]);
 
   const handleDownload = (doc) => {
+    if (doc.url) { window.open(doc.url,"_blank","noopener,noreferrer"); return; }
     const { blob } = documentDownloadBlob(doc);
     triggerDownload(blob, doc.name);
   };
@@ -75,8 +80,7 @@ export default function KnowledgeHubTab({
       <div>
         <h2 className="section-title">Project Knowledge Search</h2>
         <p className="caption">
-          Ask natural-language questions across all <strong>{project}</strong> reports, notices, emails,
-          and site observations.
+          Search source-backed text from uploaded project evidence and saved reports for <strong>{project}</strong>. Results quote matching source snippets; they are not invented answers.
         </p>
       </div>
 
@@ -103,8 +107,8 @@ export default function KnowledgeHubTab({
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="e.g. When was the last supplier delay? Show all safety incidents. Find reports related to excavation."
           />
-          <button className="btn btn-primary" type="submit">
-            <Search size={15} /> Search
+          <button className="btn btn-primary" type="submit" disabled={isSearching}>
+            <Search size={15} /> {isSearching ? "Searching…" : "Search"}
           </button>
         </form>
 
@@ -120,7 +124,7 @@ export default function KnowledgeHubTab({
                 const tier = getConfidenceTier(lastResult.result.confidence);
                 return (
                   <span className={`badge badge-${tier.color}`}>
-                    Confidence: {tier.label}
+                    Match: {tier.label}
                   </span>
                 );
               })()}

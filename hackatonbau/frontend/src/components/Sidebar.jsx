@@ -9,6 +9,7 @@ export default function Sidebar({
   activeTab,
   onTabChange,
   onQuickDictate,
+  isRecording,
 }) {
   const [logoFailed, setLogoFailed] = useState(false);
 
@@ -49,7 +50,7 @@ export default function Sidebar({
         className="btn btn-primary btn-block sidebar-dictate-btn"
         onClick={onQuickDictate}
       >
-        <Mic size={15} /> Quick Dictate
+        <Mic size={15} /> {isRecording ? "Stop recording" : "Quick Dictate"}
       </button>
 
       <div className="sidebar-card">
@@ -66,7 +67,9 @@ export default function Sidebar({
           ))}
         </select>
 
-        <div className="progress-wrap">
+        <div className="caption" style={{padding:"8px 0"}}>Live progress is available in Performance Monitoring once you enter a real schedule.</div>
+        {/* Demo figures removed until a project schedule is configured. */}
+        {/* <div className="progress-wrap">
           <div className="progress-label">Progress · 62%</div>
           <div className="progress-track">
             <div className="progress-fill" style={{ width: "62%" }} />
@@ -82,12 +85,12 @@ export default function Sidebar({
             <div className="sidebar-metric-label">Delay risks</div>
             <div className="sidebar-metric-value">2</div>
           </div>
-        </div>
+        </div> */}
       </div>
 
       <div className="sidebar-user">
-        <div className="sidebar-user-name">👤 John Smith</div>
-        <div className="sidebar-user-role">Site Manager · Online</div>
+        <div className="sidebar-user-name">👤 Site Team</div>
+        <div className="sidebar-user-role">Local Workspace</div>
       </div>
     </aside>
   );

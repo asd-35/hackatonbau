@@ -37,7 +37,7 @@ export function EvidencePreviewModal({ item, onClose }) {
             <strong>Size:</strong> {record.size_label}
           </div>
           <div className="caption">
-            <strong>Uploaded:</strong> 20 Nov 2026, {record.uploaded_at}
+            <strong>Uploaded:</strong> {record.uploaded_at}
           </div>
         </div>
         <div className="caption">
@@ -61,7 +61,7 @@ export function EvidencePreviewModal({ item, onClose }) {
             <audio controls src={fileData.objectUrl} style={{ width: "100%" }} />
           ) : (
             <div className="alert alert-info">
-              Uploaded file <strong>{name}</strong> is stored in browser session memory and ready for classification.
+              Uploaded file <strong>{name}</strong> is stored by the local backend and ready for review.
             </div>
           )
         ) : category === "photo" ? (
@@ -80,6 +80,10 @@ export function EvidencePreviewModal({ item, onClose }) {
               `Sample evidence file ${name} (${record.file_type}, ${record.size_label}).`}
           </div>
         )}
+        {fileData?.transcription?.text && <div className="alert alert-info"><strong>Whisper transcription (English):</strong> {fileData.transcription.text}</div>}
+        {fileData?.extractedText && !fileData.transcription && <div style={{whiteSpace:"pre-wrap",maxHeight:250,overflow:"auto",fontSize:13}}><strong>Extracted text:</strong><br />{fileData.extractedText.slice(0,5000)}</div>}
+        {fileData?.warnings?.length > 0 && <div className="alert alert-info">⚠️ {fileData.warnings.join("; ")}</div>}
+        {fileData?.objectUrl && <a className="btn btn-sm" href={fileData.objectUrl} target="_blank" rel="noreferrer">Open original evidence</a>}
       </div>
     </div>
   );
@@ -96,6 +100,7 @@ export function RepositoryDocumentModal({ doc, onClose }) {
         : "orange";
 
   const handleDownload = () => {
+    if (doc.url) { window.open(doc.url, "_blank", "noopener,noreferrer"); return; }
     const { blob } = documentDownloadBlob(doc);
     triggerDownload(blob, doc.name);
   };

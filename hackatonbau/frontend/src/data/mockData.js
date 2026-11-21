@@ -390,7 +390,6 @@ export const KB_INTENTS = [
 
 export const KB_DOCUMENT_COUNT = 24;
 
-// Knowledge Hub repository defaults
 export const DOC_TYPE_ICONS = {
   "Daily report": "📋",
   Report: "📋",
@@ -467,7 +466,6 @@ export const DEFAULT_REPOSITORY_DOCS = [
   },
 ];
 
-// Performance Monitoring data
 export const SCHEDULE_ACTIVITIES = [
   {
     Activity: "Foundation Works",
@@ -558,7 +556,6 @@ export const PROGRESS_TREND_DATA = [
   { Week: "W47", Planned: 75, Actual: 62 },
 ];
 
-// Meeting Intelligence data
 export const SAMPLE_MEETING_TRANSCRIPT = `Weekly Site Coordination Meeting #18 — Office Tower Munich
 Date: 20 Nov 2026 | Attendees: John Smith (Site Manager), M. Weber (Shell Contractor A),
 L. Bauer (Electrical Contractor B), Dr. K. Hoffman (Structural Engineer), T. Klein (SiGeKo)
