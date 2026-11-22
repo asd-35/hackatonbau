@@ -71,7 +71,7 @@ export default function Sidebar({
         <div className="brand-lockup">
           {!mascotFailed && (
             <img
-              src="/assets/mascot.png"
+              src="/assets/logo2.png"
               alt="BauDackel mascot"
               className="brand-mascot"
               onError={() => setMascotFailed(true)}

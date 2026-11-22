@@ -1164,12 +1164,13 @@ export default function App() {
           </div>
 
           <h1>
-            {activeTab === "knowledge"
-              ? "Knowledge Hub"
-              : activeTab === "meetings"
-                ? "Meeting Intelligence"
-                : "Construction documentation workspace"}
-          </h1>
+  {({
+    workflow: "Daily Documentation",
+    knowledge: "Knowledge Hub",
+    performance: "Performance Monitoring",
+    meetings: "Meeting Intelligence"
+  })[activeTab] || "BauDackel"}
+</h1>
         </header>
 
         {pmActionFeedback && (
