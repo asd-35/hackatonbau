@@ -1,3 +1,4 @@
+import emailRouter from "./emailRoutes.js"
 import { installProjectWorkspaces } from "./projectWorkspaces.js"
 import { installKnowledgeSearch } from "./knowledgeSearch.js"
 import express from "express"
@@ -1899,6 +1900,8 @@ app.use(
 )
 
 await setup()
+
+app.use("/api/reports/email", emailRouter)
 
 app.listen(
   PORT,

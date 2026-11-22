@@ -16,6 +16,7 @@ import {
   generateReportDocxBlob, generateReportPdfBlob, triggerDownload
 } from "../utils/exporters"
 import DocumentPreview from "./DocumentPreview"
+import EmailReportButton from "./EmailReportButton"
 
 function StepHeader({ number, title, caption, state }) {
   const meta = STEP_STATES[state] || STEP_STATES.waiting
@@ -1106,6 +1107,18 @@ export default function DailyDocumentationTab({
               <Download size={15} />
               Export Word
             </button>
+
+            <EmailReportButton
+              project={project}
+              generatedDocument={generatedDocument}
+              savedDraft={savedDraft}
+              draftIsSaved={draftIsSaved}
+              lockedTimestamp={lockedTimestamp}
+              lockedDocId={lockedDocId}
+              photoDataUrls={photoDataUrls}
+              includeInternal={includeInternal}
+            />
+
 
             <span className="caption" style={{ margin: 0 }}>
               ID <code>{lockedDocId}</code> · Saved at {savedDraft.time}

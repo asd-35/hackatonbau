@@ -1,312 +1,882 @@
-import React, { useEffect, useMemo, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useState } from "react"
 import {
-  AlertTriangle,
-  BarChart3,
-  Building2,
-  CalendarClock,
-  Plus,
-  Save,
-  ShieldAlert,
-  SlidersHorizontal,
-  TrendingUp,
-  Upload,
-  X,
+  BarChart3, Building2, CalendarClock, FileSearch, Plus,
+  RefreshCw, Save, ShieldAlert, SlidersHorizontal,
+  TrendingUp, Upload, X
 } from "lucide-react"
 import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Pie,
-  PieChart,
-  ReferenceLine,
-  ResponsiveContainer,
-  Scatter,
-  ScatterChart,
-  Tooltip,
-  XAxis,
-  YAxis,
-  ZAxis,
+  Bar, BarChart, CartesianGrid, Cell, Pie, PieChart,
+  ReferenceLine, ResponsiveContainer, Scatter, ScatterChart,
+  Tooltip, XAxis, YAxis, ZAxis
 } from "recharts"
 import { api, projectQuery } from "../api/client"
-import { varianceIndicator } from "../utils/documentUtils"
 
-const PORTFOLIO_PROJECTS = [
-  {
-    name: "Office Tower Munich",
-    shortName: "Office Tower Munich",
-    manager: "J. Smith",
-    valueM: 18.0,
-    planned: 71,
-    actual: 62,
-    budgetVar: 3.1,
-    scheduleDays: -9,
-    vobRisk: 24500,
-    safetyOpen: 2,
-    status: "Critical",
-  },
-  {
-    name: "Clinic Expansion Augsburg",
-    shortName: "Clinic Augsburg",
-    manager: "M. Weber",
-    valueM: 14.5,
-    planned: 55,
-    actual: 51,
-    budgetVar: 1.4,
-    scheduleDays: -3,
-    vobRisk: 12000,
-    safetyOpen: 1,
-    status: "At Risk",
-  },
-  {
-    name: "Logistics Hub Ingolstadt",
-    shortName: "Logistics Ingolstadt",
-    manager: "L. Bauer",
-    valueM: 9.2,
-    planned: 80,
-    actual: 82,
-    budgetVar: -0.8,
-    scheduleDays: 2,
-    vobRisk: 0,
-    safetyOpen: 0,
-    status: "On Track",
-  },
-  {
-    name: "School Campus Rosenheim",
-    shortName: "School Rosenheim",
-    manager: "K. Huber",
-    valueM: 6.8,
-    planned: 40,
-    actual: 41,
-    budgetVar: 0.2,
-    scheduleDays: 0,
-    vobRisk: 3200,
-    safetyOpen: 1,
-    status: "On Track",
-  },
-]
-
-const DELAY_ROOT_CAUSES = [
-  { name: "Supplier / Concrete", value: 42, color: "#dc2626" },
-  { name: "Subcontractor Shortage", value: 26, color: "#f97316" },
-  { name: "Weather", value: 18, color: "#3b82f6" },
-  { name: "Safety / Approvals", value: 14, color: "#0f172a" },
-]
-
-const DEFAULT_PROJECT_SCHEDULES = {
-  "Office Tower Munich": [
-    {
-      id: "otm-1",
-      Activity: "Core Concrete Pour L5–L6",
-      Trade: "Structural",
-      "Planned Progress": 85,
-      "Actual Progress": 72,
-      "Planned Completion": "2026-11-18",
-      "Actual Completion": "2026-11-27",
-      "Root Cause": "Supplier / Concrete batching delay",
-    },
-    {
-      id: "otm-2",
-      Activity: "Curtain Wall Facade East",
-      Trade: "Facade",
-      "Planned Progress": 68,
-      "Actual Progress": 58,
-      "Planned Completion": "2026-12-05",
-      "Actual Completion": "2026-12-14",
-      "Root Cause": "Subcontractor crew shortage",
-    },
-    {
-      id: "otm-3",
-      Activity: "MEP Riser Rough-In",
-      Trade: "MEP",
-      "Planned Progress": 60,
-      "Actual Progress": 56,
-      "Planned Completion": "2026-12-12",
-      "Actual Completion": "2026-12-15",
-      "Root Cause": "Safety / Guardrail rectification hold",
-    },
-  ],
-  "Clinic Expansion Augsburg": [
-    {
-      id: "cea-1",
-      Activity: "Operating Wing Steel Framing",
-      Trade: "Structural",
-      "Planned Progress": 65,
-      "Actual Progress": 60,
-      "Planned Completion": "2026-11-28",
-      "Actual Completion": "2026-12-01",
-      "Root Cause": "Supplier / Steel delivery slot shift",
-    },
-    {
-      id: "cea-2",
-      Activity: "Cleanroom HVAC Ductwork",
-      Trade: "HVAC",
-      "Planned Progress": 45,
-      "Actual Progress": 42,
-      "Planned Completion": "2026-12-18",
-      "Actual Completion": "2026-12-21",
-      "Root Cause": "Approvals / Hygiene sign-off pending",
-    },
-  ],
-  "Logistics Hub Ingolstadt": [
-    {
-      id: "lhi-1",
-      Activity: "Industrial Slab & Joint Sealing",
-      Trade: "Concrete",
-      "Planned Progress": 84,
-      "Actual Progress": 86,
-      "Planned Completion": "2026-11-25",
-      "Actual Completion": "2026-11-23",
-      "Root Cause": "",
-    },
-    {
-      id: "lhi-2",
-      Activity: "Loading Dock Levelers",
-      Trade: "Equipment",
-      "Planned Progress": 76,
-      "Actual Progress": 78,
-      "Planned Completion": "2026-12-04",
-      "Actual Completion": "2026-12-02",
-      "Root Cause": "",
-    },
-  ],
-  "School Campus Rosenheim": [
-    {
-      id: "scr-1",
-      Activity: "Timber Roof Trusses Building A",
-      Trade: "Carpentry",
-      "Planned Progress": 44,
-      "Actual Progress": 46,
-      "Planned Completion": "2026-12-10",
-      "Actual Completion": "2026-12-10",
-      "Root Cause": "",
-    },
-    {
-      id: "scr-2",
-      Activity: "Site Drainage & Utilities",
-      Trade: "Civil",
-      "Planned Progress": 36,
-      "Actual Progress": 36,
-      "Planned Completion": "2026-12-16",
-      "Actual Completion": "2026-12-16",
-      "Root Cause": "Weather / Heavy rainfall pause",
-    },
-  ],
+const COLORS = {
+  Critical: "#dc2626",
+  "At Risk": "#f97316",
+  "On Track": "#16a34a",
+  "No Data": "#94a3b8"
 }
 
-const STATUS_META = {
-  Critical: { badge: "badge-red", color: "#dc2626" },
-  "At Risk": { badge: "badge-orange", color: "#f97316" },
-  "On Track": { badge: "badge-green", color: "#16a34a" },
-}
+const CAUSES = [
+  {
+    name: "Suppliers / Materials",
+    color: "#dc2626",
+    pattern: /(?:deliver\w*|supplier|concrete|material|shipment|procurement).{0,100}(?:delay|late|short|missing|not arriv|out of stock)|(?:delay|late|short|missing).{0,100}(?:deliver\w*|supplier|concrete|material|shipment)/i
+  },
+  {
+    name: "Staffing",
+    color: "#f97316",
+    pattern: /(?:staff|crew|worker|subcontractor|electrician).{0,100}(?:short|absent|missing|reduced|understaff|did not arrive)|(?:short|understaff).{0,100}(?:staff|crew|worker|subcontractor)/i
+  },
+  {
+    name: "Weather",
+    color: "#3b82f6",
+    pattern: /(?:rain|drizzle|fog|wind|snow|weather|frost).{0,110}(?:delay|stop|halt|slow|suspend|prevent|risk)|(?:delay|halt|suspend).{0,100}(?:rain|fog|weather|snow|wind)/i
+  },
+  {
+    name: "Safety / Quality",
+    color: "#0f172a",
+    pattern: /(?:safety|inspection|guardrail|defect|weld|approval|smoke seal|fire protection).{0,110}(?:delay|hold|suspend|blocked|pending|failed)|(?:delay|hold|suspend|blocked).{0,100}(?:safety|inspection|guardrail|defect|approval)/i
+  },
+  {
+    name: "Design / Coordination",
+    color: "#8b5cf6",
+    pattern: /(?:clash|conflict|drawing|design|coordination|alignment).{0,110}(?:delay|hold|suspend|block|pending|unresolved|required)|(?:delay|hold|suspend|block).{0,100}(?:design|drawing|clash|conflict)/i
+  }
+]
+
+const num = value =>
+  Number(String(value ?? "").replace(",", "."))
+
+const pct = value =>
+  Number.isFinite(num(value))
+    ? Math.min(100, Math.max(0, num(value)))
+    : null
+
+const fmtPct = value =>
+  value == null ? "No data" : `${Number(value.toFixed(1))}%`
+
+const fmtMoney = value =>
+  value == null
+    ? "No data"
+    : `€${Math.round(value).toLocaleString("en-US")}`
+
+const fmtDays = value =>
+  value == null ? "—" : `${value > 0 ? "+" : ""}${value}d`
+
+const list = response =>
+  Array.isArray(response)
+    ? response
+    : Array.isArray(response?.items)
+      ? response.items
+      : []
+
+const compact = value =>
+  String(value || "").replace(/\s+/g, " ").trim()
+
+const projectLabel = name =>
+  name.length <= 23
+    ? name
+    : name.replace(/\s+/g, " ").slice(0, 22) + "…"
 
 const blank = () => ({
   id: crypto.randomUUID(),
   Activity: "",
   Trade: "",
-  "Planned Progress": 0,
-  "Actual Progress": 0,
+  "Planned Progress": "",
+  "Actual Progress": "",
   "Planned Completion": "",
   "Actual Completion": "",
-  "Root Cause": "",
+  "Root Cause": ""
 })
 
-const clampPct = v => Math.min(100, Math.max(0, Number(v) || 0))
+function sourceText(record) {
+  const transcript = record.transcription
 
-const formatEur = amount =>
-  `€${Number(amount || 0).toLocaleString("en-US")}`
-
-const formatSignedPct = val =>
-  `${val > 0 ? "+" : ""}${val.toFixed(1)}%`
-
-const formatSignedDays = days => {
-  if (days === 0) return "0 days"
-  return `${days > 0 ? "+" : ""}${days} days`
+  return [
+    record.extracted_text,
+    typeof transcript === "string"
+      ? transcript
+      : transcript?.text,
+    record.summary,
+    record.description
+  ]
+    .filter(value =>
+      typeof value === "string" && value.trim()
+    )
+    .join("\n")
 }
 
-function RiskMatrixTooltip({ active, payload }) {
+function progressPair(text) {
+  const t = compact(text)
+
+  const patterns = [
+    /overall\s+(?:site|project)\s+(?:progress|completion)\s*:?\s*(\d{1,3}(?:[.,]\d+)?)\s*%\s*\(?\s*planned\s*:?\s*(\d{1,3}(?:[.,]\d+)?)\s*%/i,
+    /overall\s+(?:site|project)\s+(?:progress|completion)\s*:?\s*(\d{1,3}(?:[.,]\d+)?)\s*%\s*actual\s*(?:vs\.?|against|compared with)\s*(\d{1,3}(?:[.,]\d+)?)\s*%\s*planned/i,
+    /actual\s+(?:site|project)\s+completion.{0,65}?(\d{1,3}(?:[.,]\d+)?)\s*%\s*(?:,\s*)?(?:compared with|vs\.?|against)\s*(\d{1,3}(?:[.,]\d+)?)\s*%\s*planned/i,
+    /(?:overall\s+)?(?:site|project)\s+progress.{0,100}?(\d{1,3}(?:[.,]\d+)?)\s*%\s*(?:vs\.?|against)\s*(\d{1,3}(?:[.,]\d+)?)\s*%\s*planned/i,
+    /(\d{1,3}(?:[.,]\d+)?)\s*%\s*actual\s*(?:vs\.?|against)\s*(\d{1,3}(?:[.,]\d+)?)\s*%\s*planned/i
+  ]
+
+  for (const pattern of patterns) {
+    const match = t.match(pattern)
+
+    if (match) {
+      return {
+        actual: pct(match[1]),
+        planned: pct(match[2])
+      }
+    }
+  }
+
+  const reverse = t.match(
+    /(?:overall\s+)?(?:site|project)\s+progress.{0,70}?planned\s*:?\s*(\d{1,3})\s*%.{0,50}?actual\s*:?\s*(\d{1,3})\s*%/i
+  )
+
+  return reverse
+    ? {
+        planned: pct(reverse[1]),
+        actual: pct(reverse[2])
+      }
+    : null
+}
+
+function money(raw) {
+  if (!raw) return null
+
+  const normalized = raw.replace(/\s/g, "")
+
+  const marker = /(?:mio\.?|million|m)\b/i.test(normalized)
+    ? 1e6
+    : /(?:k|thousand)\b/i.test(normalized)
+      ? 1e3
+      : 1
+
+  let number = normalized.replace(/[^\d.,]/g, "")
+
+  if (number.includes(",") && number.includes(".")) {
+    number = number.replace(/,/g, "")
+  } else if (/^\d{1,3}(,\d{3})+$/.test(number)) {
+    number = number.replace(/,/g, "")
+  } else if (/^\d{1,3}(\.\d{3})+$/.test(number)) {
+    number = number.replace(/\./g, "")
+  } else {
+    number = number.replace(",", ".")
+  }
+
+  const n = Number(number)
+
+  return Number.isFinite(n) && n > 0
+    ? n * marker
+    : null
+}
+
+function extractFinancials(text) {
+  const t = compact(text)
+
+  const value = t.match(
+    /(?:contract\s+value|project\s+budget|total\s+budget|project\s+value)\s*:?\s*(€\s*[\d.,]+\s*(?:million|mio\.?|m)?|[\d.,]+\s*(?:million|mio\.?)\s*€?)/i
+  )
+
+  const variance = t.match(
+    /(?:budget\s+var(?:iance)?|cost\s+var(?:iance)?|budget\s+deviation)\s*:?\s*([+-]?\d+(?:[.,]\d+)?)\s*%/i
+  )
+
+  const claims = [
+    ...t.matchAll(
+      /(?:claim|standstill\s+cost|vob\/b|cost\s+exposure).{0,100}?(€\s*[\d.,]+\s*(?:million|mio\.?|m)?)/gi
+    )
+  ]
+    .map(match => money(match[1]))
+    .filter(Boolean)
+
+  return {
+    value: money(value?.[1]),
+    budgetVar: variance ? num(variance[1]) : null,
+    claims
+  }
+}
+
+function scheduleGap(text) {
+  const t = compact(text)
+
+  const behind = t.match(
+    /(?:approximately\s+)?(\d+)\s*(?:working\s+)?days?\s+behind\s+schedule/i
+  )
+
+  if (behind) return -Number(behind[1])
+
+  const ahead = t.match(
+    /(\d+)\s*(?:working\s+)?days?\s+ahead\s+of\s+schedule/i
+  )
+
+  if (ahead) return Number(ahead[1])
+
+  const signed = t.match(
+    /(?:project\s+currently|overall\s+schedule|cumulative\s+delay).{0,70}?(-\d+)\s*days?/i
+  )
+
+  if (signed) return Number(signed[1])
+
+  const cumulative = t.match(
+    /(\d+)\s*[- ]day\s+cumulative\s+delay/i
+  )
+
+  return cumulative ? -Number(cumulative[1]) : null
+}
+
+function dateGap(planned, actual) {
+  if (
+    !/^\d{4}-\d\d-\d\d$/.test(planned || "") ||
+    !/^\d{4}-\d\d-\d\d$/.test(actual || "")
+  ) {
+    return null
+  }
+
+  const p = Date.parse(`${planned}T00:00:00Z`)
+  const a = Date.parse(`${actual}T00:00:00Z`)
+
+  return Number.isFinite(p) && Number.isFinite(a)
+    ? Math.round((p - a) / 86400000)
+    : null
+}
+
+function declaredSite(text) {
+  const beginning = String(text || "").slice(0, 1400)
+
+  const printed = beginning.match(
+    /(?:^|\n)\s*Project\s*:\s*([^\n·|]{3,100})/im
+  )
+
+  if (printed) return printed[1].trim()
+
+  const spoken = beginning.match(
+    /(?:working at|working on)\s+(?:the\s+)?(.{4,75}?)\s+construction\s+site\s+in\s+([\p{L}-]+)/iu
+  )
+
+  return spoken
+    ? `${spoken[1].trim()} ${spoken[2]}`
+    : ""
+}
+
+function flagsFor(text) {
+  const t = compact(text)
+    .replace(/\bno injuries (?:were )?reported\b/gi, "")
+    .replace(/\bno accidents (?:were )?reported\b/gi, "")
+
+  const safety =
+    /(?:guardrail|fall.protection|unsealed\s+floor|near.miss|slipp(?:ed|ery)|injur(?:y|ed)|safety\s+(?:incident|hazard)|smoke\s+seal|failed\s+inspection|defective\s+weld)/i.test(t)
+
+  return { safety }
+}
+
+function makeProject(
+  name,
+  evidence,
+  reports,
+  schedule,
+  metadata = {}
+) {
+  const files = [
+    ...evidence.map(item => ({
+      ...item,
+      kind: "Evidence",
+      sourceDate: item.uploaded_at || item.created_at
+    })),
+    ...reports.map(item => ({
+      ...item,
+      kind: "Report",
+      sourceDate: item.created_at || item.uploaded_at
+    }))
+  ].sort((a, b) =>
+    String(b.sourceDate || "").localeCompare(
+      String(a.sourceDate || "")
+    )
+  )
+
+  // Only analyze records describing the correct site.
+  const sources = files
+    .map(file => ({
+      id: file.id,
+      name: file.name || "Untitled",
+      kind: file.kind,
+      text: sourceText(file),
+      date: file.sourceDate
+    }))
+    .filter(file => {
+      if (!file.text) return false
+
+      const site = declaredSite(file.text)
+
+      return (
+        !site ||
+        compact(site).toLowerCase() ===
+          compact(name).toLowerCase()
+      )
+    })
+
+  // Prefer overall project figures over individual activity figures.
+  const latestProgress = sources
+    .map(item => ({
+      ...item,
+      parsed: progressPair(item.text)
+    }))
+    .find(item =>
+      item.parsed?.planned != null &&
+      item.parsed?.actual != null
+    )
+
+  const scheduleRows = schedule.filter(row => row.Activity)
+
+  const withProgress = scheduleRows.filter(row =>
+    row["Planned Progress"] !== "" &&
+    row["Planned Progress"] != null &&
+    row["Actual Progress"] !== "" &&
+    row["Actual Progress"] != null &&
+    Number.isFinite(num(row["Planned Progress"])) &&
+    Number.isFinite(num(row["Actual Progress"]))
+  )
+
+  const scheduleProgress = withProgress.length
+    ? {
+        planned:
+          withProgress.reduce(
+            (n, row) => n + pct(row["Planned Progress"]),
+            0
+          ) / withProgress.length,
+        actual:
+          withProgress.reduce(
+            (n, row) => n + pct(row["Actual Progress"]),
+            0
+          ) / withProgress.length
+      }
+    : null
+
+  const progress = scheduleProgress || latestProgress?.parsed || null
+
+  const financial = sources.map(item => ({
+    ...item,
+    parsed: extractFinancials(item.text)
+  }))
+
+  const value =
+    financial.find(item => item.parsed.value != null)
+      ?.parsed.value ?? null
+
+  const budgetVar =
+    financial.find(item => item.parsed.budgetVar != null)
+      ?.parsed.budgetVar ?? null
+
+  const claimValues = [
+    ...new Set(
+      financial.flatMap(item => item.parsed.claims)
+    )
+  ]
+
+  const claim = claimValues.length
+    ? claimValues.reduce((a, b) => a + b, 0)
+    : null
+
+  const reportedDays = sources
+    .map(item => scheduleGap(item.text))
+    .find(value => value != null)
+
+  const activityDays = scheduleRows
+    .map(row =>
+      dateGap(
+        row["Planned Completion"],
+        row["Actual Completion"]
+      )
+    )
+    .filter(value => value != null)
+
+  const days =
+    reportedDays ??
+    (activityDays.length ? Math.min(...activityDays) : null)
+
+  const safetySources = sources.filter(item =>
+    flagsFor(item.text).safety
+  )
+
+  const issues = new Set()
+  const delayMentions = []
+
+  for (const source of sources) {
+    const t = compact(source.text)
+
+    for (const cause of CAUSES) {
+      if (cause.pattern.test(t)) {
+        delayMentions.push({
+          name: cause.name,
+          source: source.name
+        })
+      }
+    }
+  }
+
+  for (const row of scheduleRows) {
+    const t = String(row["Root Cause"] || "")
+
+    if (t) {
+      for (const cause of CAUSES) {
+        if (
+          cause.pattern.test(`${t} delay`) ||
+          cause.pattern.test(t)
+        ) {
+          delayMentions.push({
+            name: cause.name,
+            source: row.Activity
+          })
+        }
+      }
+    }
+
+    if (
+      row["Planned Progress"] !== "" &&
+      row["Actual Progress"] !== "" &&
+      pct(row["Actual Progress"]) <
+        pct(row["Planned Progress"])
+    ) {
+      issues.add(row.Activity)
+    }
+  }
+
+  const progressGap = progress
+    ? progress.actual - progress.planned
+    : null
+
+  const status =
+    progressGap == null &&
+    !safetySources.length &&
+    !issues.size
+      ? "No Data"
+      : progressGap != null && progressGap <= -8
+        ? "Critical"
+        : (progressGap != null && progressGap < -2) ||
+            safetySources.length >= 1 ||
+            issues.size
+          ? "At Risk"
+          : "On Track"
+
+  return {
+    name,
+    shortName: projectLabel(name),
+    planned: progress?.planned ?? null,
+    actual: progress?.actual ?? null,
+    progressGap,
+    progressSource: scheduleProgress
+      ? "Saved activity schedule (unweighted average)"
+      : latestProgress?.name || null,
+    value,
+    budgetVar,
+    claim,
+    days,
+    status,
+    safetySignals: safetySources.length,
+    issueCount: safetySources.length + issues.size,
+    sources,
+    schedule: scheduleRows,
+    documents: files.length,
+    delayMentions,
+    lastActivity: metadata.last_activity || null,
+    sourceNames: sources.map(item => item.name),
+    scheduleEntries: scheduleRows.length
+  }
+}
+
+function csvRows(text) {
+  const lines = text
+    .replace(/^\uFEFF/, "")
+    .trim()
+    .split(/\r?\n/)
+
+  const split = line => {
+    const values = []
+    let value = ""
+    let quoted = false
+
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i]
+
+      if (c === '"' && line[i + 1] === '"' && quoted) {
+        value += '"'
+        i++
+      } else if (c === '"') {
+        quoted = !quoted
+      } else if (c === "," && !quoted) {
+        values.push(value.trim())
+        value = ""
+      } else {
+        value += c
+      }
+    }
+
+    values.push(value.trim())
+    return values
+  }
+
+  const headers = split(lines[0] || "").map(x =>
+    x.toLowerCase().replace(/\s+/g, "_")
+  )
+
+  return lines
+    .slice(1)
+    .filter(Boolean)
+    .map(line => {
+      const values = split(line)
+
+      const get = (...keys) => {
+        const i = keys
+          .map(k => headers.indexOf(k))
+          .find(i => i >= 0)
+
+        return i == null ? "" : values[i] || ""
+      }
+
+      return {
+        id: crypto.randomUUID(),
+        Activity: get("activity", "task"),
+        Trade: get("trade"),
+        "Planned Progress": get(
+          "planned_progress",
+          "planned"
+        ),
+        "Actual Progress": get(
+          "actual_progress",
+          "actual"
+        ),
+        "Planned Completion": get(
+          "planned_completion",
+          "planned_date"
+        ),
+        "Actual Completion": get(
+          "actual_completion",
+          "actual_date"
+        ),
+        "Root Cause": get("root_cause", "reason")
+      }
+    })
+    .filter(row => row.Activity)
+}
+
+function Metric({
+  title,
+  value,
+  subtitle,
+  Icon,
+  color = ""
+}) {
+  return (
+    <div className="exec-kpi-card">
+      <div className="exec-kpi-top">
+        <span className="exec-kpi-label">{title}</span>
+        <Icon size={15} color="#64748b" />
+      </div>
+
+      <div className="exec-kpi-value">{value}</div>
+
+      <div className={`exec-kpi-sub ${color}`}>
+        {subtitle}
+      </div>
+    </div>
+  )
+}
+
+function RiskTooltip({ active, payload }) {
   if (!active || !payload?.length) return null
-  const d = payload[0].payload
+
+  const p = payload[0].payload
+
   return (
     <div
       style={{
         background: "#0f172a",
-        color: "#ffffff",
-        padding: "8px 11px",
+        color: "white",
+        padding: 12,
         borderRadius: 8,
-        fontSize: "0.78rem",
-        boxShadow: "0 8px 20px rgba(15,23,42,0.25)",
+        fontSize: 12
       }}
     >
-      <div style={{ fontWeight: 700, marginBottom: 4 }}>{d.name}</div>
-      <div>Value: €{d.valueM.toFixed(1)}M</div>
-      <div>Schedule: {formatSignedDays(d.scheduleDays)}</div>
-      <div>Budget Var.: {formatSignedPct(d.budgetVar)}</div>
-      <div>Status: {d.status}</div>
+      <strong>{p.name}</strong>
+      <div>Progress gap: {fmtPct(p.progressGap)}</div>
+      <div>Safety / schedule flags: {p.issueCount}</div>
+      <div>Documents: {p.documents}</div>
+    </div>
+  )
+}
+
+function Empty({
+  children = "No documented data available yet."
+}) {
+  return (
+    <div
+      style={{
+        height: 210,
+        display: "grid",
+        placeItems: "center",
+        color: "#64748b",
+        fontSize: 13,
+        textAlign: "center",
+        padding: 22
+      }}
+    >
+      {children}
     </div>
   )
 }
 
 export default function PerformanceMonitoringTab({ project }) {
+  const [projects, setProjects] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState("")
   const [viewMode, setViewMode] = useState("portfolio")
-  const [selectedProject, setSelectedProject] = useState(
-    PORTFOLIO_PROJECTS.some(p => p.name === project) ? project : PORTFOLIO_PROJECTS[0].name
-  )
-  const [manageOpen, setManageOpen] = useState(false)
-
-  // Schedule persistence state (backed by /api/schedule per selectedProject)
+  const [selectedProject, setSelectedProject] = useState(project)
   const [rows, setRows] = useState([])
-  const [hasSavedSchedule, setHasSavedSchedule] = useState(false)
+  const [manageOpen, setManageOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState("")
+  const [refreshIndex, setRefreshIndex] = useState(0)
+  const [aiBrief, setAiBrief] = useState(null)
+  const [askingAi, setAskingAi] = useState(false)
+
+  const refresh = useCallback(
+    () => setRefreshIndex(index => index + 1),
+    []
+  )
 
   useEffect(() => {
-    if (PORTFOLIO_PROJECTS.some(p => p.name === project)) {
-      setSelectedProject(project)
-    }
+    setSelectedProject(project)
+    setAiBrief(null)
   }, [project])
 
   useEffect(() => {
     let alive = true
-    setMessage("")
-    api(`/api/schedule${projectQuery(selectedProject)}`)
-      .then(v => {
-        if (!alive) return
-        const items = v.items || []
-        if (items.length > 0) {
-          setRows(items)
-          setHasSavedSchedule(true)
-        } else {
-          setRows(DEFAULT_PROJECT_SCHEDULES[selectedProject] || [])
-          setHasSavedSchedule(false)
+
+    setLoading(true)
+    setLoadError("")
+
+    ;(async () => {
+      const response = await api("/api/projects")
+      const registered = list(response)
+
+      const loaded = await Promise.all(
+        registered.map(async entry => {
+          const name =
+            typeof entry === "string"
+              ? entry
+              : entry.name
+
+          const paths = [
+            "/api/evidence",
+            "/api/repository",
+            "/api/schedule"
+          ].map(root =>
+            api(`${root}${projectQuery(name)}`)
+          )
+
+          const results = await Promise.allSettled(paths)
+
+          const failed = results
+            .map((result, index) =>
+              result.status === "rejected"
+                ? ["Evidence", "Reports", "Schedule"][index]
+                : ""
+            )
+            .filter(Boolean)
+
+          return {
+            data: makeProject(
+              name,
+              ...results.map(result =>
+                result.status === "fulfilled"
+                  ? list(result.value)
+                  : []
+              ),
+              entry
+            ),
+            failed
+          }
+        })
+      )
+
+      if (!alive) return
+
+      setProjects(loaded.map(item => item.data))
+
+      const failed = loaded.filter(
+        item => item.failed.length
+      )
+
+      setLoadError(
+        failed.length
+          ? `Some project data could not be loaded: ${
+              failed
+                .map(item =>
+                  `${item.data.name} (${item.failed.join(", ")})`
+                )
+                .join("; ")
+            }.`
+          : ""
+      )
+    })()
+      .catch(error => {
+        if (alive) {
+          setLoadError(
+            `Portfolio loading failed: ${error.message}`
+          )
         }
       })
-      .catch(() => {
-        if (!alive) return
-        setRows(DEFAULT_PROJECT_SCHEDULES[selectedProject] || [])
-        setHasSavedSchedule(false)
+      .finally(() => {
+        if (alive) setLoading(false)
       })
+
     return () => {
       alive = false
     }
-  }, [selectedProject])
+  }, [refreshIndex])
 
-  const updateRow = (idx, field, value) =>
-    setRows(prev => prev.map((r, i) => (i === idx ? { ...r, [field]: value } : r)))
+  const active =
+    projects.find(item => item.name === selectedProject) ||
+    makeProject(selectedProject, [], [], [])
+
+  useEffect(() => {
+    setRows(active.schedule.map(item => ({ ...item })))
+    setMessage("")
+    setAiBrief(null)
+  }, [selectedProject, projects])
+
+  const indicators = useMemo(() => {
+    const progressProjects = projects.filter(
+      item =>
+        item.planned != null &&
+        item.actual != null
+    )
+
+    const reportedValue = projects.filter(
+      item => item.value != null
+    )
+
+    const claims = projects.filter(
+      item => item.claim != null
+    )
+
+    const totalValue = reportedValue.reduce(
+      (sum, item) => sum + item.value,
+      0
+    )
+
+    const ratio =
+      progressProjects.reduce(
+        (sum, p) => sum + p.actual,
+        0
+      ) /
+      (
+        progressProjects.reduce(
+          (sum, p) => sum + p.planned,
+          0
+        ) || 1
+      )
+
+    return {
+      value: reportedValue.length
+        ? totalValue
+        : null,
+      valueCount: reportedValue.length,
+      progressRatio: progressProjects.length
+        ? ratio
+        : null,
+      progressCount: progressProjects.length,
+      claims: claims.length
+        ? claims.reduce(
+            (sum, item) => sum + item.claim,
+            0
+          )
+        : null,
+      claimCount: claims.length,
+      safety: projects.reduce(
+        (sum, item) => sum + item.safetySignals,
+        0
+      ),
+      safetyProjects: projects.filter(
+        item => item.safetySignals
+      ).length,
+      statuses: {
+        "On Track": projects.filter(
+          p => p.status === "On Track"
+        ).length,
+        "At Risk": projects.filter(
+          p => p.status === "At Risk"
+        ).length,
+        Critical: projects.filter(
+          p => p.status === "Critical"
+        ).length
+      }
+    }
+  }, [projects])
+
+  const donut = useMemo(() => {
+    const counts = new Map(
+      CAUSES.map(item => [item.name, 0])
+    )
+
+    for (const p of projects) {
+      for (const mention of p.delayMentions) {
+        counts.set(
+          mention.name,
+          (counts.get(mention.name) || 0) + 1
+        )
+      }
+    }
+
+    return CAUSES
+      .map(item => ({
+        name: item.name,
+        value: counts.get(item.name) || 0,
+        color: item.color
+      }))
+      .filter(item => item.value > 0)
+  }, [projects])
+
+  const chartProjects = projects.filter(
+    p => p.planned != null && p.actual != null
+  )
+
+  const scatterProjects = projects.filter(
+    p =>
+      p.progressGap != null &&
+      (p.sources.length || p.scheduleEntries)
+  )
 
   const saveSchedule = async () => {
+    if (!selectedProject) return
+
     setBusy(true)
+    setMessage("")
+
     try {
-      const res = await api("/api/schedule", {
+      const response = await api("/api/schedule", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project: selectedProject, items: rows }),
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          project: selectedProject,
+          items: rows.filter(row =>
+            row.Activity.trim()
+          )
+        })
       })
-      setRows(res.items || rows)
-      setHasSavedSchedule(true)
-      setMessage(`Saved schedule for ${selectedProject}.`)
-    } catch (e) {
-      setMessage(`Save failed: ${e.message}`)
+
+      setRows(list(response))
+
+      setMessage(
+        `Saved ${list(response).length} activities for ${selectedProject}.`
+      )
+
+      refresh()
+    } catch (error) {
+      setMessage(`Save failed: ${error.message}`)
     } finally {
       setBusy(false)
     }
@@ -314,129 +884,115 @@ export default function PerformanceMonitoringTab({ project }) {
 
   const importCsv = async file => {
     if (!file) return
-    const text = await file.text()
-    const lines = text.trim().split(/\r?\n/)
-    const splitCsv = line =>
-      line
-        .match(/("(?:[^"]|"")*"|[^,]*)(?:,|$)/g)
-        ?.map(x => x.replace(/,$/, "").replace(/^"|"$/g, "").replace(/""/g, '"')) || []
-    const headers = splitCsv(lines[0]).map(v => v.trim().toLowerCase().replace(/\s+/g, "_"))
-    const loaded = lines
-      .slice(1)
-      .filter(Boolean)
-      .map(line => {
-        const cells = splitCsv(line)
-        const get = (...keys) => {
-          let i = -1
-          for (const k of keys) {
-            i = headers.indexOf(k)
-            if (i >= 0) break
-          }
-          return i < 0 ? "" : cells[i] || ""
-        }
-        return {
-          id: crypto.randomUUID(),
-          Activity: get("activity", "task"),
-          Trade: get("trade"),
-          "Planned Progress": clampPct(get("planned_progress", "planned")),
-          "Actual Progress": clampPct(get("actual_progress", "actual")),
-          "Planned Completion": get("planned_completion", "planned_date"),
-          "Actual Completion": get("actual_completion", "actual_date"),
-          "Root Cause": get("root_cause", "reason"),
-        }
-      })
-      .filter(r => r.Activity)
 
-    if (!loaded.length) {
-      setMessage("CSV needs an Activity column and progress values.")
-      return
+    try {
+      const imported = csvRows(await file.text())
+
+      if (!imported.length) {
+        throw new Error(
+          "CSV needs an Activity column"
+        )
+      }
+
+      setRows(imported)
+
+      setMessage(
+        `Imported ${imported.length} rows. Click Save schedule to persist.`
+      )
+    } catch (error) {
+      setMessage(error.message)
     }
-    setRows(loaded)
-    setMessage(`Imported ${loaded.length} rows for ${selectedProject}. Click Save schedule to persist.`)
   }
 
-  // Portfolio-level KPI calculations
-  const portfolioKpis = useMemo(() => {
-    const totalValueM = PORTFOLIO_PROJECTS.reduce((acc, p) => acc + p.valueM, 0)
-    const weightedBudgetVar =
-      PORTFOLIO_PROJECTS.reduce((acc, p) => acc + p.valueM * p.budgetVar, 0) / totalValueM
-    const cpi = 1 / (1 + weightedBudgetVar / 100)
+  const askAi = async () => {
+    setAskingAi(true)
+    setAiBrief(null)
 
-    const onTrackCount = PORTFOLIO_PROJECTS.filter(p => p.status === "On Track").length
-    const atRiskCount = PORTFOLIO_PROJECTS.filter(p => p.status === "At Risk").length
-    const criticalCount = PORTFOLIO_PROJECTS.filter(p => p.status === "Critical").length
+    try {
+      const response = await api("/api/knowledge/search", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          project: selectedProject,
+          question:
+            `Summarize the CURRENT documented construction progress, ` +
+            `delays, safety concerns and next actions for ${selectedProject}. ` +
+            `Use only documents about this site. Include source citations ` +
+            `and distinguish resolved from unresolved items.`
+        })
+      })
 
-    const totalPlanned = PORTFOLIO_PROJECTS.reduce((acc, p) => acc + p.planned * p.valueM, 0)
-    const totalActual = PORTFOLIO_PROJECTS.reduce((acc, p) => acc + p.actual * p.valueM, 0)
-    const spi = totalPlanned > 0 ? totalActual / totalPlanned : 1
-
-    const totalVobRisk = PORTFOLIO_PROJECTS.reduce((acc, p) => acc + p.vobRisk, 0)
-    const totalSafetyOpen = PORTFOLIO_PROJECTS.reduce((acc, p) => acc + p.safetyOpen, 0)
-
-    return {
-      totalValueM,
-      weightedBudgetVar,
-      cpi,
-      onTrackCount,
-      atRiskCount,
-      criticalCount,
-      spi,
-      totalVobRisk,
-      totalSafetyOpen,
+      setAiBrief(
+        response.result || {
+          found: false,
+          answer: "No grounded project brief available."
+        }
+      )
+    } catch (error) {
+      setAiBrief({
+        found: false,
+        answer: `AI summary failed: ${error.message}`
+      })
+    } finally {
+      setAskingAi(false)
     }
-  }, [])
+  }
 
-  const activeProjectMeta = useMemo(
-    () => PORTFOLIO_PROJECTS.find(p => p.name === selectedProject) || PORTFOLIO_PROJECTS[0],
-    [selectedProject]
-  )
-
-  const projectSummary = useMemo(() => {
-    if (!rows.length) {
-      return {
-        planned: activeProjectMeta.planned,
-        actual: activeProjectMeta.actual,
-        variance: activeProjectMeta.actual - activeProjectMeta.planned,
-      }
-    }
-    const planned = Math.round(
-      rows.reduce((n, r) => n + clampPct(r["Planned Progress"]), 0) / rows.length
-    )
-    const actual = Math.round(
-      rows.reduce((n, r) => n + clampPct(r["Actual Progress"]), 0) / rows.length
-    )
-    return { planned, actual, variance: actual - planned }
-  }, [rows, activeProjectMeta])
-
-  const handleSelectProjectRow = projectName => {
-    setSelectedProject(projectName)
+  const chooseProject = name => {
+    setSelectedProject(name)
     setViewMode("project")
   }
 
+  const tracked = projects.filter(
+    p => p.documents || p.scheduleEntries
+  ).length
+
   return (
     <div className="stack">
-      {/* Executive Header */}
       <div className="exec-header">
         <div>
           <div className="flex-row">
-            <h2 className="section-title">Executive Portfolio Dashboard</h2>
+            <h2 className="section-title">
+              Executive Portfolio Dashboard
+            </h2>
+
             <span className="live-sync-badge">
               <span className="live-sync-dot" />
-              Portfolio Live Sync
+              Real project records
             </span>
           </div>
+
           <p className="caption">
             {viewMode === "portfolio"
-              ? "Cross-site cost, schedule, VOB/B claim exposure, and safety overview across 4 active Bavarian sites."
-              : `Single-project performance & schedule breakdown for ${selectedProject} (Site Manager: ${activeProjectMeta.manager}).`}
+              ? `Live overview of ${projects.length} registered sites. ${tracked} have project records.`
+              : `Actual saved project data for ${selectedProject}. Missing metrics are shown as unavailable.`}
           </p>
         </div>
 
         <div className="exec-header-actions">
           <button
-            type="button"
             className="btn btn-sm"
-            onClick={() => setManageOpen(true)}
+            type="button"
+            onClick={refresh}
+            disabled={loading}
+          >
+            <RefreshCw size={14} />
+            {loading ? "Loading…" : "Refresh Data"}
+          </button>
+
+          <button
+            className="btn btn-sm"
+            type="button"
+            onClick={() => {
+              setSelectedProject(
+                viewMode === "portfolio"
+                  ? project
+                  : selectedProject
+              )
+              setManageOpen(true)
+            }}
           >
             <SlidersHorizontal size={14} />
             Manage Schedule / Import CSV
@@ -444,23 +1000,36 @@ export default function PerformanceMonitoringTab({ project }) {
         </div>
       </div>
 
-      {/* Segmented View Toggle */}
+      {loadError && (
+        <div
+          className="alert alert-info"
+          style={{ color: "#b91c1c" }}
+        >
+          {loadError}
+        </div>
+      )}
+
       <div className="exec-view-bar">
-        <div className="exec-segmented" role="tablist" aria-label="Performance view mode">
+        <div
+          className="exec-segmented"
+          role="tablist"
+          aria-label="Performance view mode"
+        >
           <button
             type="button"
-            role="tab"
-            aria-selected={viewMode === "portfolio"}
-            className={`exec-seg-btn ${viewMode === "portfolio" ? "active" : ""}`}
+            className={`exec-seg-btn ${
+              viewMode === "portfolio" ? "active" : ""
+            }`}
             onClick={() => setViewMode("portfolio")}
           >
             All Projects
           </button>
+
           <button
             type="button"
-            role="tab"
-            aria-selected={viewMode === "project"}
-            className={`exec-seg-btn ${viewMode === "project" ? "active" : ""}`}
+            className={`exec-seg-btn ${
+              viewMode === "project" ? "active" : ""
+            }`}
             onClick={() => setViewMode("project")}
           >
             {selectedProject}
@@ -468,230 +1037,384 @@ export default function PerformanceMonitoringTab({ project }) {
         </div>
 
         {viewMode === "project" && (
-          <div className="flex-row">
-            <span className={`badge ${STATUS_META[activeProjectMeta.status].badge}`}>
-              {activeProjectMeta.status}
-            </span>
-            <span className="caption" style={{ margin: 0 }}>
-              {hasSavedSchedule ? "Custom saved schedule" : "Preloaded baseline schedule"}
-            </span>
-          </div>
+          <span
+            className={`badge ${
+              active.status === "Critical"
+                ? "badge-red"
+                : active.status === "At Risk"
+                  ? "badge-orange"
+                  : active.status === "On Track"
+                    ? "badge-green"
+                    : ""
+            }`}
+          >
+            {active.status}
+          </span>
         )}
       </div>
 
       {viewMode === "portfolio" ? (
         <>
-          {/* PART 2: TOP KPI STRIP (4 C-LEVEL METRICS) */}
           <div className="exec-kpi-grid">
-            <div className="exec-kpi-card">
-              <div className="exec-kpi-top">
-                <span className="exec-kpi-label">Active Portfolio Value</span>
-                <Building2 size={15} color="#64748b" />
-              </div>
-              <div className="exec-kpi-value">
-                €{portfolioKpis.totalValueM.toFixed(1)}M
-              </div>
-              <div className="exec-kpi-sub warn">
-                {formatSignedPct(portfolioKpis.weightedBudgetVar)} Cost Risk · CPI{" "}
-                {portfolioKpis.cpi.toFixed(2)}
-              </div>
-            </div>
+            <Metric
+              title="Documented Portfolio Value"
+              value={
+                indicators.value == null
+                  ? "No data"
+                  : `€${(indicators.value / 1e6).toFixed(2)}M`
+              }
+              subtitle={`${indicators.valueCount}/${projects.length} projects have a stated contract value`}
+              Icon={Building2}
+            />
 
-            <div className="exec-kpi-card">
-              <div className="exec-kpi-top">
-                <span className="exec-kpi-label">Portfolio Schedule Health</span>
-                <CalendarClock size={15} color="#64748b" />
-              </div>
-              <div className="exec-kpi-value">SPI {portfolioKpis.spi.toFixed(2)}</div>
-              <div className="exec-kpi-sub">
-                {portfolioKpis.onTrackCount} On Track · {portfolioKpis.atRiskCount} At Risk ·{" "}
-                {portfolioKpis.criticalCount} Critical
-              </div>
-            </div>
+            <Metric
+              title="Portfolio Progress Health"
+              value={
+                indicators.progressRatio == null
+                  ? "No data"
+                  : `Ratio ${indicators.progressRatio.toFixed(2)}`
+              }
+              subtitle={`${indicators.progressCount}/${projects.length} with plan/actual · ${indicators.statuses["On Track"]} on track · ${indicators.statuses["At Risk"]} at risk · ${indicators.statuses.Critical} critical (not EVM SPI)`}
+              Icon={CalendarClock}
+            />
 
-            <div className="exec-kpi-card">
-              <div className="exec-kpi-top">
-                <span className="exec-kpi-label">VOB/B Claim &amp; Delay Exposure</span>
-                <TrendingUp size={15} color="#dc2626" />
-              </div>
-              <div className="exec-kpi-value">
-                {formatEur(portfolioKpis.totalVobRisk)}
-              </div>
-              <div className="exec-kpi-sub risk">Pending Claims</div>
-            </div>
+            <Metric
+              title="Claim Amounts in Records"
+              value={fmtMoney(indicators.claims)}
+              subtitle={`${indicators.claimCount} projects mention claim amounts · not verified as outstanding`}
+              Icon={TrendingUp}
+              color="warn"
+            />
 
-            <div className="exec-kpi-card">
-              <div className="exec-kpi-top">
-                <span className="exec-kpi-label">Safety &amp; Critical Defects</span>
-                <ShieldAlert size={15} color="#f97316" />
-              </div>
-              <div className="exec-kpi-value">
-                {portfolioKpis.totalSafetyOpen} Critical Open
-              </div>
-              <div className="exec-kpi-sub warn">SiGeKo &amp; Quality Defects</div>
-            </div>
+            <Metric
+              title="Safety / Quality Signals"
+              value={`${indicators.safety} document${
+                indicators.safety === 1 ? "" : "s"
+              }`}
+              subtitle={`Across ${indicators.safetyProjects} projects · signals, not confirmed open incidents`}
+              Icon={ShieldAlert}
+              color="warn"
+            />
           </div>
 
-          {/* PART 3: MACRO COMPARISON CHARTS (3 VISUALS) */}
           <div className="exec-charts-grid">
-            {/* Chart 1: Planned vs Actual Progress (Horizontal Bar / Soll-Ist) */}
             <div className="exec-chart-card">
-              <div>
-                <h3 className="exec-chart-title">Planned vs. Actual Progress (Soll-Ist)</h3>
-                <p className="exec-chart-sub">Completion (%) by site</p>
-              </div>
-              <div style={{ width: "100%", height: 220 }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={PORTFOLIO_PROJECTS}
-                    layout="vertical"
-                    margin={{ top: 4, right: 16, left: 6, bottom: 4 }}
-                    barGap={3}
+              <h3 className="exec-chart-title">
+                Planned vs. Actual Progress (Soll-Ist)
+              </h3>
+
+              <p className="exec-chart-sub">
+                Only projects with documented progress
+              </p>
+
+              {chartProjects.length ? (
+                <div
+                  style={{
+                    height: Math.max(
+                      230,
+                      chartProjects.length * 50
+                    )
+                  }}
+                >
+                  <ResponsiveContainer
+                    width="100%"
+                    height="100%"
                   >
-                    <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
-                    <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 11 }} unit="%" />
-                    <YAxis
-                      type="category"
-                      dataKey="shortName"
-                      width={112}
-                      tick={{ fontSize: 11, fill: "#334155" }}
-                    />
-                    <Tooltip formatter={value => `${value}%`} />
-                    <Bar dataKey="planned" name="Planned" fill="#cbd5e1" radius={[0, 4, 4, 0]} barSize={10} />
-                    <Bar dataKey="actual" name="Actual" radius={[0, 4, 4, 0]} barSize={10}>
-                      {PORTFOLIO_PROJECTS.map(entry => (
-                        <Cell
-                          key={entry.name}
-                          fill={entry.actual >= entry.planned ? "#16a34a" : "#f97316"}
-                        />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+                    <BarChart
+                      data={chartProjects}
+                      layout="vertical"
+                      margin={{
+                        top: 8,
+                        right: 18,
+                        left: 10,
+                        bottom: 4
+                      }}
+                      barGap={3}
+                    >
+                      <CartesianGrid
+                        strokeDasharray="3 3"
+                        horizontal={false}
+                        stroke="#e2e8f0"
+                      />
+
+                      <XAxis
+                        type="number"
+                        domain={[0, 100]}
+                        unit="%"
+                        tick={{ fontSize: 11 }}
+                      />
+
+                      <YAxis
+                        type="category"
+                        dataKey="shortName"
+                        width={118}
+                        tick={{ fontSize: 10 }}
+                      />
+
+                      <Tooltip
+                        formatter={v =>
+                          `${Number(v.toFixed(1))}%`
+                        }
+                      />
+
+                      <Bar
+                        name="Planned"
+                        dataKey="planned"
+                        fill="#cbd5e1"
+                        barSize={10}
+                      />
+
+                      <Bar
+                        name="Actual"
+                        dataKey="actual"
+                        barSize={10}
+                      >
+                        {chartProjects.map(p => (
+                          <Cell
+                            key={p.name}
+                            fill={
+                              p.actual >= p.planned
+                                ? "#16a34a"
+                                : "#f97316"
+                            }
+                          />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <Empty>
+                  Upload a progress report or save a
+                  schedule to populate this chart.
+                </Empty>
+              )}
+
               <div className="exec-chart-legend">
                 <span className="exec-legend-item">
-                  <span className="exec-legend-dot" style={{ background: "#cbd5e1" }} />
+                  <span
+                    className="exec-legend-dot"
+                    style={{ background: "#cbd5e1" }}
+                  />
                   Planned
                 </span>
+
                 <span className="exec-legend-item">
-                  <span className="exec-legend-dot" style={{ background: "#f97316" }} />
-                  Actual (Behind)
+                  <span
+                    className="exec-legend-dot"
+                    style={{ background: "#f97316" }}
+                  />
+                  Actual behind
                 </span>
+
                 <span className="exec-legend-item">
-                  <span className="exec-legend-dot" style={{ background: "#16a34a" }} />
-                  Actual (On/Ahead)
+                  <span
+                    className="exec-legend-dot"
+                    style={{ background: "#16a34a" }}
+                  />
+                  On/ahead
                 </span>
               </div>
             </div>
 
-            {/* Chart 2: Project Risk Matrix (Scatter / Bubble Chart) */}
             <div className="exec-chart-card">
-              <div>
-                <h3 className="exec-chart-title">Project Risk Matrix</h3>
-                <p className="exec-chart-sub">Schedule (days) vs. Budget Var. (%) · Size = €M</p>
-              </div>
-              <div style={{ width: "100%", height: 220 }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <ScatterChart margin={{ top: 10, right: 16, left: -8, bottom: 8 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis
-                      type="number"
-                      dataKey="scheduleDays"
-                      name="Schedule Variance"
-                      domain={[-12, 6]}
-                      unit="d"
-                      tick={{ fontSize: 11 }}
-                    />
-                    <YAxis
-                      type="number"
-                      dataKey="budgetVar"
-                      name="Budget Variance"
-                      domain={[-2, 4]}
-                      unit="%"
-                      tick={{ fontSize: 11 }}
-                    />
-                    <ZAxis type="number" dataKey="valueM" range={[160, 620]} name="Value (€M)" />
-                    <ReferenceLine x={0} stroke="#94a3b8" strokeDasharray="3 3" />
-                    <ReferenceLine y={0} stroke="#94a3b8" strokeDasharray="3 3" />
-                    <Tooltip content={<RiskMatrixTooltip />} />
-                    <Scatter data={PORTFOLIO_PROJECTS} name="Projects">
-                      {PORTFOLIO_PROJECTS.map(entry => (
-                        <Cell
-                          key={entry.name}
-                          fill={STATUS_META[entry.status].color}
-                          fillOpacity={0.85}
-                        />
-                      ))}
-                    </Scatter>
-                  </ScatterChart>
-                </ResponsiveContainer>
-              </div>
+              <h3 className="exec-chart-title">
+                Project Risk Matrix
+              </h3>
+
+              <p className="exec-chart-sub">
+                Progress variance (percentage points) vs.
+                documented safety/schedule flags ·
+                bubble size = records
+              </p>
+
+              {scatterProjects.length ? (
+                <div style={{ height: 240 }}>
+                  <ResponsiveContainer
+                    width="100%"
+                    height="100%"
+                  >
+                    <ScatterChart
+                      margin={{
+                        top: 10,
+                        right: 12,
+                        left: -10,
+                        bottom: 12
+                      }}
+                    >
+                      <CartesianGrid
+                        strokeDasharray="3 3"
+                        stroke="#e2e8f0"
+                      />
+
+                      <XAxis
+                        type="number"
+                        dataKey="progressGap"
+                        name="Progress gap"
+                        unit="pp"
+                        tick={{ fontSize: 11 }}
+                        domain={[
+                          "dataMin - 2",
+                          "dataMax + 2"
+                        ]}
+                      />
+
+                      <YAxis
+                        type="number"
+                        dataKey="issueCount"
+                        allowDecimals={false}
+                        name="Flagged records"
+                        tick={{ fontSize: 11 }}
+                        domain={[0, "dataMax + 1"]}
+                      />
+
+                      <ZAxis
+                        type="number"
+                        dataKey="documents"
+                        range={[100, 480]}
+                      />
+
+                      <ReferenceLine
+                        x={0}
+                        stroke="#94a3b8"
+                        strokeDasharray="3 3"
+                      />
+
+                      <Tooltip content={<RiskTooltip />} />
+
+                      <Scatter data={scatterProjects}>
+                        {scatterProjects.map(p => (
+                          <Cell
+                            key={p.name}
+                            fill={COLORS[p.status]}
+                          />
+                        ))}
+                      </Scatter>
+                    </ScatterChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <Empty>
+                  Risk comparisons need documented
+                  progress figures.
+                </Empty>
+              )}
+
               <div className="exec-chart-legend">
                 <span className="exec-legend-item">
-                  <span className="exec-legend-dot" style={{ background: "#dc2626" }} />
+                  <span
+                    className="exec-legend-dot"
+                    style={{
+                      background: COLORS.Critical
+                    }}
+                  />
                   Critical
                 </span>
+
                 <span className="exec-legend-item">
-                  <span className="exec-legend-dot" style={{ background: "#f97316" }} />
-                  At Risk
+                  <span
+                    className="exec-legend-dot"
+                    style={{
+                      background: COLORS["At Risk"]
+                    }}
+                  />
+                  At risk
                 </span>
+
                 <span className="exec-legend-item">
-                  <span className="exec-legend-dot" style={{ background: "#16a34a" }} />
-                  On Track
+                  <span
+                    className="exec-legend-dot"
+                    style={{
+                      background: COLORS["On Track"]
+                    }}
+                  />
+                  On track
                 </span>
               </div>
             </div>
 
-            {/* Chart 3: Cross-Site Delay Root Causes (Donut Chart) */}
             <div className="exec-chart-card">
-              <div>
-                <h3 className="exec-chart-title">Cross-Site Delay Root Causes</h3>
-                <p className="exec-chart-sub">Share of documented schedule delays</p>
-              </div>
-              <div style={{ width: "100%", height: 220 }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={DELAY_ROOT_CAUSES}
-                      dataKey="value"
-                      nameKey="name"
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={52}
-                      outerRadius={80}
-                      paddingAngle={3}
-                    >
-                      {DELAY_ROOT_CAUSES.map(entry => (
-                        <Cell key={entry.name} fill={entry.color} />
-                      ))}
-                    </Pie>
-                    <Tooltip formatter={value => `${value}%`} />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
+              <h3 className="exec-chart-title">
+                Cross-Site Delay Contributors
+              </h3>
+
+              <p className="exec-chart-sub">
+                Occurrences in actual uploaded records
+                and schedules
+              </p>
+
+              {donut.length ? (
+                <div style={{ height: 240 }}>
+                  <ResponsiveContainer
+                    width="100%"
+                    height="100%"
+                  >
+                    <PieChart>
+                      <Pie
+                        data={donut}
+                        dataKey="value"
+                        nameKey="name"
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={52}
+                        outerRadius={80}
+                        paddingAngle={3}
+                      >
+                        {donut.map(item => (
+                          <Cell
+                            key={item.name}
+                            fill={item.color}
+                          />
+                        ))}
+                      </Pie>
+
+                      <Tooltip
+                        formatter={v =>
+                          `${v} source mention${
+                            v === 1 ? "" : "s"
+                          }`
+                        }
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <Empty>
+                  No attributable delay causes
+                  documented yet.
+                </Empty>
+              )}
+
               <div className="exec-chart-legend">
-                {DELAY_ROOT_CAUSES.map(item => (
-                  <span key={item.name} className="exec-legend-item">
-                    <span className="exec-legend-dot" style={{ background: item.color }} />
-                    {item.name} ({item.value}%)
+                {donut.map(item => (
+                  <span
+                    className="exec-legend-item"
+                    key={item.name}
+                  >
+                    <span
+                      className="exec-legend-dot"
+                      style={{
+                        background: item.color
+                      }}
+                    />
+                    {item.name} ({item.value})
                   </span>
                 ))}
               </div>
             </div>
           </div>
 
-          {/* PART 4: EXECUTIVE PORTFOLIO COMPARISON TABLE (SCORECARD) */}
           <div className="card stack-sm">
             <div className="flex-between">
               <div className="flex-row">
-                <BarChart3 size={16} color="#0f172a" />
-                <strong style={{ fontSize: "0.95rem" }}>
+                <BarChart3 size={16} />
+                <strong>
                   Executive Portfolio Scorecard
                 </strong>
               </div>
-              <span className="caption" style={{ margin: 0 }}>
-                Click any project row to inspect its schedule detail
+
+              <span className="caption">
+                Click a project to inspect its source data
               </span>
             </div>
 
@@ -699,83 +1422,83 @@ export default function PerformanceMonitoringTab({ project }) {
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Project &amp; Site Manager</th>
-                    <th>Value</th>
-                    <th>Progress (Plan / Act.)</th>
+                    <th>Project</th>
+                    <th>Files</th>
+                    <th>Contract Value</th>
+                    <th>Plan / Actual</th>
                     <th>Budget Var.</th>
                     <th>Schedule</th>
-                    <th>VOB/B Risk</th>
-                    <th>Safety</th>
+                    <th>Claim Amounts</th>
+                    <th>Safety Flags</th>
                     <th>Status</th>
                   </tr>
                 </thead>
+
                 <tbody>
-                  {PORTFOLIO_PROJECTS.map(p => (
+                  {projects.map(p => (
                     <tr
-                      key={p.name}
                       className="scorecard-row"
-                      onClick={() => handleSelectProjectRow(p.name)}
+                      key={p.name}
+                      onClick={() =>
+                        chooseProject(p.name)
+                      }
                     >
                       <td>
-                        <div className="scorecard-project-name">{p.name}</div>
-                        <div className="scorecard-manager">{p.manager}</div>
+                        <div className="scorecard-project-name">
+                          {p.name}
+                        </div>
                       </td>
-                      <td style={{ fontWeight: 600 }}>€{p.valueM.toFixed(1)}M</td>
+
+                      <td>{p.documents}</td>
+
                       <td>
-                        <span style={{ color: "#64748b" }}>{p.planned}%</span>
-                        {" / "}
-                        <strong
-                          style={{
-                            color: p.actual < p.planned ? "#c2410c" : "#166534",
-                          }}
-                        >
-                          {p.actual}%
-                        </strong>
+                        {p.value == null
+                          ? "—"
+                          : `€${(
+                              p.value / 1e6
+                            ).toFixed(2)}M`}
                       </td>
-                      <td
-                        style={{
-                          fontWeight: 600,
-                          color:
-                            p.budgetVar > 2
-                              ? "#dc2626"
-                              : p.budgetVar > 0.5
-                                ? "#c2410c"
-                                : "#166534",
-                        }}
-                      >
-                        {formatSignedPct(p.budgetVar)}
+
+                      <td>
+                        {p.planned == null
+                          ? "—"
+                          : `${fmtPct(p.planned)} / ${fmtPct(p.actual)}`}
                       </td>
-                      <td
-                        style={{
-                          fontWeight: 600,
-                          color:
-                            p.scheduleDays <= -5
-                              ? "#dc2626"
-                              : p.scheduleDays < 0
-                                ? "#c2410c"
-                                : "#166534",
-                        }}
-                      >
-                        {formatSignedDays(p.scheduleDays)}
+
+                      <td>
+                        {p.budgetVar == null
+                          ? "—"
+                          : `${
+                              p.budgetVar > 0
+                                ? "+"
+                                : ""
+                            }${p.budgetVar}%`}
                       </td>
-                      <td style={{ fontWeight: p.vobRisk > 0 ? 600 : 400 }}>
-                        {formatEur(p.vobRisk)}
+
+                      <td>
+                        {fmtDays(p.days)}
                       </td>
+
+                      <td>
+                        {fmtMoney(p.claim)}
+                      </td>
+
+                      <td>
+                        {p.safetySignals} flagged
+                      </td>
+
                       <td>
                         <span
                           className={`badge ${
-                            p.safetyOpen >= 2
+                            p.status === "Critical"
                               ? "badge-red"
-                              : p.safetyOpen === 1
+                              : p.status === "At Risk"
                                 ? "badge-orange"
-                                : "badge-green"
+                                : p.status === "On Track"
+                                  ? "badge-green"
+                                  : ""
                           }`}
                         >
-                          {p.safetyOpen} Open
-                        </span>
-                      </td>
-                      <td>
-                        <span className={`badge ${STATUS_META[p.status].badge}`}>
                           {p.status}
                         </span>
                       </td>
@@ -787,154 +1510,246 @@ export default function PerformanceMonitoringTab({ project }) {
           </div>
         </>
       ) : (
-        /* SINGLE-PROJECT DETAIL / SCHEDULE VIEW */
         <div className="stack">
           <div className="exec-kpi-grid">
-            <div className="exec-kpi-card">
-              <div className="exec-kpi-label">Contract Value</div>
-              <div className="exec-kpi-value">
-                €{activeProjectMeta.valueM.toFixed(1)}M
-              </div>
-              <div className="exec-kpi-sub">
-                Budget Var.: {formatSignedPct(activeProjectMeta.budgetVar)}
-              </div>
-            </div>
+            <Metric
+              title="Contract Value"
+              value={
+                active.value == null
+                  ? "No data"
+                  : `€${(
+                      active.value / 1e6
+                    ).toFixed(2)}M`
+              }
+              subtitle={
+                active.budgetVar == null
+                  ? "Budget variance not documented"
+                  : `Budget variance ${active.budgetVar}%`
+              }
+              Icon={Building2}
+            />
 
-            <div className="exec-kpi-card">
-              <div className="exec-kpi-label">Planned vs. Actual</div>
-              <div className="exec-kpi-value">
-                {projectSummary.planned}% / {projectSummary.actual}%
-              </div>
-              <div
-                className={`exec-kpi-sub ${
-                  projectSummary.variance < -5
-                    ? "risk"
-                    : projectSummary.variance < 0
-                      ? "warn"
-                      : "good"
-                }`}
-              >
-                Variance: {projectSummary.variance > 0 ? "+" : ""}
-                {projectSummary.variance}% · {formatSignedDays(activeProjectMeta.scheduleDays)}
-              </div>
-            </div>
+            <Metric
+              title="Planned / Actual"
+              value={
+                active.planned == null
+                  ? "No data"
+                  : `${fmtPct(active.planned)} / ${fmtPct(active.actual)}`
+              }
+              subtitle={
+                active.progressGap == null
+                  ? "Add a schedule or a progress report"
+                  : `Gap ${
+                      active.progressGap > 0
+                        ? "+"
+                        : ""
+                    }${Number(
+                      active.progressGap.toFixed(1)
+                    )} pp · ${active.progressSource}`
+              }
+              Icon={CalendarClock}
+            />
 
-            <div className="exec-kpi-card">
-              <div className="exec-kpi-label">VOB/B Claim Exposure</div>
-              <div className="exec-kpi-value">
-                {formatEur(activeProjectMeta.vobRisk)}
-              </div>
-              <div className="exec-kpi-sub">Documented site claims</div>
-            </div>
+            <Metric
+              title="Documented Claim Amounts"
+              value={fmtMoney(active.claim)}
+              subtitle="Referenced amounts, not verified outstanding"
+              Icon={TrendingUp}
+            />
 
-            <div className="exec-kpi-card">
-              <div className="exec-kpi-label">Safety &amp; Critical Defects</div>
-              <div className="exec-kpi-value">
-                {activeProjectMeta.safetyOpen} Open
-              </div>
-              <div className="exec-kpi-sub">Site Manager: {activeProjectMeta.manager}</div>
-            </div>
+            <Metric
+              title="Safety / Quality Signals"
+              value={`${active.safetySignals} flagged documents`}
+              subtitle={`${active.documents} saved files · ${active.scheduleEntries} schedule activities`}
+              Icon={ShieldAlert}
+            />
           </div>
 
           <div className="card stack-sm">
-            <strong>Planned vs. Actual Completion — {selectedProject}</strong>
-            <div className="progress-wrap">
-              <div className="progress-label">Planned · {projectSummary.planned}%</div>
-              <div className="progress-track">
-                <div
-                  className="progress-fill navy"
-                  style={{ width: `${projectSummary.planned}%` }}
-                />
-              </div>
+            <div className="flex-between">
+              <strong>
+                Actual Project Evidence — {selectedProject}
+              </strong>
+
+              <button
+                className="btn btn-sm"
+                disabled={
+                  askingAi ||
+                  !active.sources.length
+                }
+                onClick={askAi}
+              >
+                <FileSearch size={14} />
+                {askingAi
+                  ? "Analyzing records…"
+                  : "Ask Qwen for Project Brief"}
+              </button>
             </div>
-            <div className="progress-wrap">
-              <div className="progress-label">Actual · {projectSummary.actual}%</div>
-              <div className="progress-track">
-                <div
-                  className={`progress-fill ${
-                    projectSummary.actual >= projectSummary.planned ? "green" : ""
-                  }`}
-                  style={{ width: `${projectSummary.actual}%` }}
-                />
+
+            <p className="caption">
+              Numbers are extracted from uploaded text
+              or saved schedules. Missing values aren't estimated.
+            </p>
+
+            {aiBrief && (
+              <div
+                className="alert alert-info"
+                style={{
+                  display: "block",
+                  whiteSpace: "pre-wrap",
+                  lineHeight: 1.65
+                }}
+              >
+                {aiBrief.answer ||
+                  "No verified answer was found."}
+
+                {aiBrief.sources?.length > 0 && (
+                  <div
+                    className="caption"
+                    style={{ marginTop: 9 }}
+                  >
+                    Sources:{" "}
+                    {aiBrief.sources
+                      .map(s => s.name)
+                      .join("; ")}
+                  </div>
+                )}
               </div>
+            )}
+
+            {active.planned != null && (
+              <>
+                <div className="progress-wrap">
+                  <div className="progress-label">
+                    Planned · {fmtPct(active.planned)}
+                  </div>
+
+                  <div className="progress-track">
+                    <div
+                      className="progress-fill navy"
+                      style={{
+                        width: `${active.planned}%`
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className="progress-wrap">
+                  <div className="progress-label">
+                    Actual · {fmtPct(active.actual)}
+                  </div>
+
+                  <div className="progress-track">
+                    <div
+                      className={`progress-fill ${
+                        active.actual >= active.planned
+                          ? "green"
+                          : ""
+                      }`}
+                      style={{
+                        width: `${active.actual}%`
+                      }}
+                    />
+                  </div>
+                </div>
+              </>
+            )}
+
+            <div className="caption">
+              {active.sourceNames.length
+                ? `Indexed source records: ${active.sourceNames.join("; ")}`
+                : "No readable report text or transcripts available for this site."}
             </div>
           </div>
 
           <div className="card stack-sm">
             <div className="flex-between">
-              <strong style={{ fontSize: "0.95rem" }}>
-                Project Schedule Activities ({rows.length})
+              <strong>
+                Project Schedule Activities ({active.schedule.length})
               </strong>
+
               <button
-                type="button"
                 className="btn btn-sm"
-                onClick={() => setManageOpen(true)}
+                onClick={() =>
+                  setManageOpen(true)
+                }
               >
-                <SlidersHorizontal size={13} />
+                <SlidersHorizontal size={14} />
                 Edit Schedule / Import CSV
               </button>
             </div>
 
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Activity</th>
-                    <th>Trade</th>
-                    <th>Plan %</th>
-                    <th>Actual %</th>
-                    <th>Plan Completion</th>
-                    <th>Actual Completion</th>
-                    <th>Variance</th>
-                    <th>Root Cause</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r, i) => {
-                    const delta = clampPct(r["Actual Progress"]) - clampPct(r["Planned Progress"])
-                    const ind = varianceIndicator(delta)
-                    return (
-                      <tr key={r.id || i}>
-                        <td style={{ fontWeight: 600 }}>{r.Activity || "Untitled activity"}</td>
-                        <td>{r.Trade || "—"}</td>
-                        <td>{clampPct(r["Planned Progress"])}%</td>
-                        <td style={{ fontWeight: 600 }}>{clampPct(r["Actual Progress"])}%</td>
-                        <td>{r["Planned Completion"] || "—"}</td>
-                        <td>{r["Actual Completion"] || "—"}</td>
-                        <td>
-                          <span className={`badge badge-${ind.color}`}>
-                            {delta > 0 ? "+" : ""}
-                            {delta}%
-                          </span>
-                        </td>
-                        <td style={{ color: "#475569" }}>
-                          {r["Root Cause"] ? (
-                            <span className="flex-row" style={{ gap: 5 }}>
-                              {delta < -5 && <AlertTriangle size={13} color="#dc2626" />}
-                              {r["Root Cause"]}
-                            </span>
-                          ) : (
-                            "—"
-                          )}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
+            {active.schedule.length ? (
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Activity</th>
+                      <th>Trade</th>
+                      <th>Planned</th>
+                      <th>Actual</th>
+                      <th>Plan Date</th>
+                      <th>Actual Date</th>
+                      <th>Root Cause</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {active.schedule.map(
+                      (r, index) => (
+                        <tr key={r.id || index}>
+                          <td>
+                            <strong>
+                              {r.Activity}
+                            </strong>
+                          </td>
+
+                          <td>
+                            {r.Trade || "—"}
+                          </td>
+
+                          <td>
+                            {r["Planned Progress"] ?? "—"}%
+                          </td>
+
+                          <td>
+                            {r["Actual Progress"] ?? "—"}%
+                          </td>
+
+                          <td>
+                            {r["Planned Completion"] || "—"}
+                          </td>
+
+                          <td>
+                            {r["Actual Completion"] || "—"}
+                          </td>
+
+                          <td>
+                            {r["Root Cause"] || "—"}
+                          </td>
+                        </tr>
+                      )
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <Empty>
+                No schedule saved for this project.
+                Click Edit Schedule / Import CSV.
+              </Empty>
+            )}
           </div>
         </div>
       )}
 
-      {/* RELOCATED SCHEDULE MANAGEMENT / CSV IMPORT MODAL */}
       {manageOpen && (
         <div
           className="modal-backdrop"
-          onClick={() => setManageOpen(false)}
           role="dialog"
           aria-modal="true"
-          aria-label="Manage Schedule and Import CSV"
+          aria-label="Manage schedule"
+          onClick={() => setManageOpen(false)}
         >
           <div
             className="modal-card schedule-modal-card stack"
@@ -942,18 +1757,23 @@ export default function PerformanceMonitoringTab({ project }) {
           >
             <div className="flex-between">
               <div>
-                <h3 style={{ margin: 0 }}>Manage Schedule / Import CSV</h3>
-                <p className="caption" style={{ margin: "2px 0 0" }}>
-                  Editing schedule for <strong>{selectedProject}</strong>. CSV columns: Activity,
-                  Trade, Planned Progress, Actual Progress, Planned Completion, Actual Completion,
-                  Root Cause.
+                <h3 style={{ margin: 0 }}>
+                  Manage Schedule / Import CSV
+                </h3>
+
+                <p className="caption">
+                  Project:{" "}
+                  <strong>{selectedProject}</strong>.
+                  Enter real schedule values only.
                 </p>
               </div>
+
               <button
-                type="button"
                 className="btn btn-ghost btn-sm"
-                onClick={() => setManageOpen(false)}
-                aria-label="Close schedule manager"
+                onClick={() =>
+                  setManageOpen(false)
+                }
+                aria-label="Close"
               >
                 <X size={16} />
               </button>
@@ -961,14 +1781,25 @@ export default function PerformanceMonitoringTab({ project }) {
 
             <div className="flex-row">
               <button
-                type="button"
                 className="btn btn-sm"
-                onClick={() => setRows(prev => [...prev, blank()])}
+                onClick={() =>
+                  setRows(prev => [
+                    ...prev,
+                    blank()
+                  ])
+                }
               >
-                <Plus size={14} /> Add activity
+                <Plus size={14} />
+                Add activity
               </button>
-              <label className="btn btn-sm" style={{ cursor: "pointer" }}>
-                <Upload size={14} /> Import CSV
+
+              <label
+                className="btn btn-sm"
+                style={{ cursor: "pointer" }}
+              >
+                <Upload size={14} />
+                Import CSV
+
                 <input
                   type="file"
                   accept=".csv,text/csv"
@@ -979,99 +1810,181 @@ export default function PerformanceMonitoringTab({ project }) {
                   }}
                 />
               </label>
+
               <button
-                type="button"
                 className="btn btn-primary btn-sm"
                 disabled={busy}
                 onClick={saveSchedule}
               >
-                <Save size={14} /> {busy ? "Saving…" : "Save schedule"}
+                <Save size={14} />
+                {busy
+                  ? "Saving…"
+                  : "Save schedule"}
               </button>
             </div>
 
-            {message && <div className="alert alert-info">{message}</div>}
+            {message && (
+              <div className="alert alert-info">
+                {message}
+              </div>
+            )}
 
-            <div className="table-wrap" style={{ maxHeight: 360, overflowY: "auto" }}>
+            <div
+              className="table-wrap"
+              style={{
+                maxHeight: 360,
+                overflowY: "auto"
+              }}
+            >
               <table className="data-table">
                 <thead>
                   <tr>
                     <th>Activity</th>
                     <th>Trade</th>
-                    <th style={{ width: 82 }}>Plan %</th>
-                    <th style={{ width: 82 }}>Actual %</th>
+                    <th>Plan %</th>
+                    <th>Actual %</th>
                     <th>Plan Date</th>
                     <th>Actual Date</th>
                     <th>Root Cause</th>
                     <th></th>
                   </tr>
                 </thead>
+
                 <tbody>
-                  {rows.map((r, i) => (
-                    <tr key={r.id || i}>
+                  {rows.map((r, index) => (
+                    <tr key={r.id || index}>
                       <td>
                         <input
                           className="input"
-                          value={r.Activity}
-                          onChange={e => updateRow(i, "Activity", e.target.value)}
-                          placeholder="e.g. Install facade panels"
+                          value={r.Activity || ""}
+                          onChange={e =>
+                            setRows(prev =>
+                              prev.map(
+                                (row, i) =>
+                                  i === index
+                                    ? {
+                                        ...row,
+                                        Activity:
+                                          e.target.value
+                                      }
+                                    : row
+                              )
+                            )
+                          }
+                          placeholder="Activity"
                         />
                       </td>
+
                       <td>
                         <input
                           className="input"
                           value={r.Trade || ""}
-                          onChange={e => updateRow(i, "Trade", e.target.value)}
+                          onChange={e =>
+                            setRows(prev =>
+                              prev.map(
+                                (row, i) =>
+                                  i === index
+                                    ? {
+                                        ...row,
+                                        Trade:
+                                          e.target.value
+                                      }
+                                    : row
+                              )
+                            )
+                          }
                         />
                       </td>
+
+                      {[
+                        "Planned Progress",
+                        "Actual Progress"
+                      ].map(key => (
+                        <td key={key}>
+                          <input
+                            className="input"
+                            type="number"
+                            min="0"
+                            max="100"
+                            value={r[key] ?? ""}
+                            onChange={e =>
+                              setRows(prev =>
+                                prev.map(
+                                  (row, i) =>
+                                    i === index
+                                      ? {
+                                          ...row,
+                                          [key]:
+                                            e.target.value
+                                        }
+                                      : row
+                                )
+                              )
+                            }
+                          />
+                        </td>
+                      ))}
+
+                      {[
+                        "Planned Completion",
+                        "Actual Completion"
+                      ].map(key => (
+                        <td key={key}>
+                          <input
+                            className="input"
+                            type="date"
+                            value={r[key] || ""}
+                            onChange={e =>
+                              setRows(prev =>
+                                prev.map(
+                                  (row, i) =>
+                                    i === index
+                                      ? {
+                                          ...row,
+                                          [key]:
+                                            e.target.value
+                                        }
+                                      : row
+                                )
+                              )
+                            }
+                          />
+                        </td>
+                      ))}
+
                       <td>
                         <input
                           className="input"
-                          type="number"
-                          min="0"
-                          max="100"
-                          value={r["Planned Progress"]}
-                          onChange={e => updateRow(i, "Planned Progress", e.target.value)}
+                          value={
+                            r["Root Cause"] || ""
+                          }
+                          onChange={e =>
+                            setRows(prev =>
+                              prev.map(
+                                (row, i) =>
+                                  i === index
+                                    ? {
+                                        ...row,
+                                        "Root Cause":
+                                          e.target.value
+                                      }
+                                    : row
+                              )
+                            )
+                          }
                         />
                       </td>
-                      <td>
-                        <input
-                          className="input"
-                          type="number"
-                          min="0"
-                          max="100"
-                          value={r["Actual Progress"]}
-                          onChange={e => updateRow(i, "Actual Progress", e.target.value)}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          className="input"
-                          type="date"
-                          value={r["Planned Completion"] || ""}
-                          onChange={e => updateRow(i, "Planned Completion", e.target.value)}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          className="input"
-                          type="date"
-                          value={r["Actual Completion"] || ""}
-                          onChange={e => updateRow(i, "Actual Completion", e.target.value)}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          className="input"
-                          value={r["Root Cause"] || ""}
-                          onChange={e => updateRow(i, "Root Cause", e.target.value)}
-                          placeholder="Optional"
-                        />
-                      </td>
+
                       <td>
                         <button
-                          type="button"
                           className="btn btn-danger-ghost btn-sm"
-                          onClick={() => setRows(prev => prev.filter((_, n) => n !== i))}
+                          onClick={() =>
+                            setRows(prev =>
+                              prev.filter(
+                                (_, i) => i !== index
+                              )
+                            )
+                          }
                         >
                           Remove
                         </button>
