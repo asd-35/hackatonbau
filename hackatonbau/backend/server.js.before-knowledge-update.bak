@@ -1,0 +1,1925 @@
+import express from "express"
+import cors from "cors"
+import multer from "multer"
+import path from "node:path"
+import fs from "node:fs/promises"
+import { fileURLToPath } from "node:url"
+import { randomUUID } from "node:crypto"
+import { spawn } from "node:child_process"
+import { REPORT_TYPES } from "./classifier.js"
+import { registerReportTranslation } from "./reportTranslation.js"
+
+const app = express()
+const ROOT = path.dirname(fileURLToPath(import.meta.url))
+const REPO_ROOT = path.resolve(ROOT, "..")
+const DATA = path.join(ROOT, "data")
+const FILES = path.join(DATA, "evidence")
+const DOCS = path.join(DATA, "documents")
+const DATABASE = path.join(DATA, "records.json")
+const PORT = Number(process.env.PORT || 3000)
+const WHISPER_URL = process.env.WHISPER_URL || "http://127.0.0.1:8001"
+const QWEN_URL = process.env.QWEN_URL || "http://127.0.0.1:8002"
+const PYTHON = process.env.AI_PYTHON ||
+  path.join(REPO_ROOT, "hackaton", "bin", "python")
+const LIMIT = 25 * 1024 * 1024
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: LIMIT, files: 8 }
+})
+
+const extensions = new Set([
+  ".jpg", ".jpeg", ".png", ".webp",
+  ".pdf", ".docx", ".msg", ".eml",
+  ".txt", ".md", ".csv", ".json",
+  ".mp3", ".wav", ".webm", ".ogg",
+  ".m4a", ".mp4", ".flac"
+])
+
+const audioExt = new Set([
+  ".mp3", ".wav", ".webm", ".ogg",
+  ".m4a", ".mp4", ".flac"
+])
+
+const imageExt = new Set([
+  ".jpg", ".jpeg", ".png", ".webp"
+])
+
+const textExt = new Set([
+  ".txt", ".md", ".csv", ".json", ".eml"
+])
+
+const projectName = value =>
+  String(value || "Office Tower Munich").slice(0, 120)
+
+const publicFile = x => ({
+  id: x.id,
+  name: x.name,
+  project: x.project,
+  category: x.category,
+  mime: x.mime,
+  size: x.size,
+  uploaded_at: x.uploaded_at,
+  extracted_text: x.extracted_text,
+  transcription: x.transcription,
+  warnings: x.warnings,
+  assigned_types: x.assigned_types,
+  classification: x.classification || null,
+  classification_manual: Boolean(x.classification_manual),
+  summary: x.summary,
+  url: `/api/evidence/${x.id}/file`
+})
+
+const publicDoc = x => ({
+  ...x,
+  extracted_text: undefined,
+  blob: undefined,
+  diskName: undefined,
+  url: `/api/repository/${x.id}/file`
+})
+
+let db = {
+  evidence: [],
+  documents: [],
+  schedule: []
+}
+
+let pendingWrite = Promise.resolve()
+
+async function setup() {
+  await Promise.all(
+    [DATA, FILES, DOCS].map(p =>
+      fs.mkdir(p, { recursive: true })
+    )
+  )
+
+  try {
+    const saved = JSON.parse(
+      await fs.readFile(DATABASE, "utf8")
+    )
+
+    db = {
+      evidence: Array.isArray(saved.evidence)
+        ? saved.evidence
+        : [],
+      documents: Array.isArray(saved.documents)
+        ? saved.documents
+        : [],
+      schedule: Array.isArray(saved.schedule)
+        ? saved.schedule
+        : []
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.warn(
+        "Storage reset after unreadable database:",
+        error.message
+      )
+    }
+  }
+}
+
+function persist() {
+  pendingWrite = pendingWrite
+    .catch(() => {})
+    .then(async () => {
+      const tmp = `${DATABASE}.tmp`
+      await fs.writeFile(
+        tmp,
+        JSON.stringify(db, null, 2)
+      )
+      await fs.rename(tmp, DATABASE)
+    })
+
+  return pendingWrite
+}
+
+function category(ext) {
+  if (audioExt.has(ext)) return "voice"
+  if (imageExt.has(ext)) return "photo"
+  if (textExt.has(ext)) return "text"
+  if (ext === ".docx") return "word"
+  if ([".msg", ".eml"].includes(ext)) return "email"
+  return "pdf"
+}
+
+async function aiRequest(url, body, headers, timeout = 240000) {
+  let response
+
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers,
+      body,
+      signal: AbortSignal.timeout(timeout)
+    })
+  } catch (error) {
+    throw new Error(
+      `AI service unavailable at ${url}: ${error.message}`
+    )
+  }
+
+  let data
+
+  try {
+    data = await response.json()
+  } catch {
+    throw new Error(
+      `AI service returned invalid JSON (${response.status})`
+    )
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      data.error ||
+      `AI service failed with status ${response.status}`
+    )
+  }
+
+  return data
+}
+
+async function whisperFile(file) {
+  const ext = path.extname(
+    file.originalname || file.name || ""
+  ).toLowerCase()
+
+  if (!audioExt.has(ext)) {
+    throw new Error("Unsupported audio format")
+  }
+
+  return aiRequest(
+    `${WHISPER_URL}/transcribe`,
+    file.buffer,
+    {
+      "Content-Type": "application/octet-stream",
+      "X-Audio-Extension": ext
+    }
+  )
+}
+
+async function qwenText(
+  text,
+  photo = null,
+  mime = "image/jpeg"
+) {
+  const payload = { text: text || "" }
+
+  if (photo) {
+    if (photo.length > 7 * 1024 * 1024) {
+      throw new Error("Image exceeds 7MB AI limit")
+    }
+
+    payload.image_base64 = photo.toString("base64")
+    payload.image_mime = mime
+  }
+
+  const data = await aiRequest(
+    `${QWEN_URL}/generate`,
+    JSON.stringify(payload),
+    { "Content-Type": "application/json" },
+    300000
+  )
+
+  return data.report
+}
+
+async function extractPath(filePath) {
+  return new Promise(resolve => {
+    const child = spawn(
+      PYTHON,
+      [
+        path.join(REPO_ROOT, "ai", "extract_document.py"),
+        filePath
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] }
+    )
+
+    let out = ""
+    let err = ""
+    let ended = false
+
+    child.stdout.on("data", data => {
+      if (out.length < 100001) {
+        out += data.toString().slice(
+          0,
+          100001 - out.length
+        )
+      }
+    })
+
+    child.stderr.on("data", data => {
+      if (err.length < 1000) {
+        err += data.toString().slice(
+          0,
+          1000 - err.length
+        )
+      }
+    })
+
+    child.on("error", error => {
+      ended = true
+
+      resolve({
+        text: "",
+        warning:
+          `Document extraction unavailable: ${error.message}`
+      })
+    })
+
+    child.on("close", code => {
+      if (ended) return
+
+      if (code !== 0) {
+        return resolve({
+          text: "",
+          warning:
+            `Document extraction failed: ${err.slice(0, 180)}`
+        })
+      }
+
+      resolve({
+        text: out.slice(0, 100000),
+        warning: out.trim()
+          ? null
+          : "No selectable text found; scanned documents need OCR"
+      })
+    })
+  })
+}
+
+async function extractDocument(file, ext) {
+  if (textExt.has(ext)) {
+    return {
+      text: file.buffer
+        .toString("utf8")
+        .slice(0, 100000),
+      warning: null
+    }
+  }
+
+  if (![".pdf", ".docx", ".msg"].includes(ext)) {
+    return {
+      text: "",
+      warning: null
+    }
+  }
+
+  return extractPath(
+    path.join(FILES, file.diskName)
+  )
+}
+
+async function qwenClassify(
+  text,
+  photo = null,
+  mime = "image/jpeg"
+) {
+  if (!String(text || "").trim() && !photo) {
+    return {
+      types: [],
+      scores: {},
+      reasons: {},
+      method: "no readable evidence",
+      needs_review: true
+    }
+  }
+
+  const payload = {
+    text: String(text || "").slice(0, 11000)
+  }
+
+  if (photo) {
+    if (photo.length > 7 * 1024 * 1024) {
+      throw new Error("Image exceeds 7MB AI limit")
+    }
+
+    payload.image_base64 = photo.toString("base64")
+    payload.image_mime = mime
+  }
+
+  const data = await aiRequest(
+    `${QWEN_URL}/classify`,
+    JSON.stringify(payload),
+    { "Content-Type": "application/json" },
+    300000
+  )
+
+  const result = data.classification
+
+  if (!result || result.method === "qwen3-vl failed") {
+    throw new Error(
+      result?.warning ||
+      "Semantic classification unavailable"
+    )
+  }
+
+  const types = (
+    Array.isArray(result.types)
+      ? result.types
+      : []
+  ).filter(type => REPORT_TYPES.includes(type))
+
+  return {
+    types: [...new Set(types)],
+    scores: {},
+    reasons: result.reasons || {},
+    method: "qwen3-vl semantic",
+    needs_review: Boolean(result.needs_review)
+  }
+}
+
+async function classifyItem(item, photo = null) {
+  try {
+    return await qwenClassify(
+      item.extracted_text,
+      photo,
+      item.mime
+    )
+  } catch (error) {
+    item.warnings.push(
+      `AI classification unavailable: ${error.message}`
+    )
+    return null
+  }
+}
+
+function projectRecords(project, collection) {
+  return collection
+    .filter(x => x.project === project)
+    .sort((a, b) =>
+      String(b.created_at || b.uploaded_at)
+        .localeCompare(
+          String(a.created_at || a.uploaded_at)
+        )
+    )
+}
+
+app.use(cors({
+  origin: process.env.CORS_ORIGIN?.split(",") || [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173"
+  ]
+}))
+
+app.use(express.json({ limit: "12mb" }))
+
+// GERMAN REPORT TRANSLATION
+registerReportTranslation(app, QWEN_URL)
+
+// HEALTH
+app.get("/api/health", async (req, res) => {
+  const services = {}
+
+  await Promise.all(
+    [
+      ["whisper", WHISPER_URL],
+      ["qwen", QWEN_URL]
+    ].map(async ([name, url]) => {
+      try {
+        const response = await fetch(
+          `${url}/health`,
+          {
+            signal: AbortSignal.timeout(1500)
+          }
+        )
+
+        services[name] = response.ok
+          ? "ready"
+          : "error"
+      } catch {
+        services[name] = "offline"
+      }
+    })
+  )
+
+  res.json({
+    status: "running",
+    services
+  })
+})
+
+// TRANSCRIBE
+app.post(
+  "/api/transcribe",
+  upload.single("audio"),
+  async (req, res, next) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          error: "Audio required"
+        })
+      }
+
+      res.json({
+        success: true,
+        transcription: await whisperFile(req.file)
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// TEXT REPORT
+app.post("/api/report/text", async (req, res, next) => {
+  try {
+    const text = req.body?.text
+
+    if (
+      typeof text !== "string" ||
+      !text.trim()
+    ) {
+      return res.status(400).json({
+        error: "Text required"
+      })
+    }
+
+    res.json({
+      success: true,
+      report: await qwenText(text)
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+// VOICE REPORT
+app.post(
+  "/api/report",
+  upload.single("audio"),
+  async (req, res, next) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          error: "Audio required"
+        })
+      }
+
+      const transcription = await whisperFile(req.file)
+
+      if (!transcription.text?.trim()) {
+        return res.status(422).json({
+          error: "No speech detected"
+        })
+      }
+
+      const report = await qwenText(
+        transcription.text
+      )
+
+      res.json({
+        success: true,
+        transcription,
+        report
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// EVIDENCE RETRIEVAL
+app.get("/api/evidence", (req, res) => {
+  res.json({
+    items: projectRecords(
+      projectName(req.query.project),
+      db.evidence
+    ).map(publicFile)
+  })
+})
+
+// EVIDENCE UPLOAD
+app.post(
+  "/api/evidence",
+  upload.single("file"),
+  async (req, res, next) => {
+    if (!req.file) {
+      return res.status(400).json({
+        error: "File required"
+      })
+    }
+
+    const ext = path.extname(
+      req.file.originalname
+    ).toLowerCase()
+
+    if (!extensions.has(ext)) {
+      return res.status(415).json({
+        error: `Unsupported extension ${ext}`
+      })
+    }
+
+    const id = randomUUID()
+    const diskName = id + ext
+    const project = projectName(req.body.project)
+
+    const item = {
+      id,
+      diskName,
+      name: path.basename(req.file.originalname),
+      project,
+      mime: req.file.mimetype,
+      size: req.file.size,
+      category: category(ext),
+      uploaded_at: new Date().toISOString(),
+      extracted_text: "",
+      transcription: null,
+      warnings: [],
+      assigned_types: [],
+      classification: null,
+      classification_manual: false,
+      summary: ""
+    }
+
+    try {
+      await fs.writeFile(
+        path.join(FILES, diskName),
+        req.file.buffer
+      )
+
+      if (audioExt.has(ext)) {
+        try {
+          item.transcription = await whisperFile(
+            req.file
+          )
+
+          item.extracted_text =
+            item.transcription.text || ""
+        } catch (error) {
+          item.warnings.push(
+            `Whisper failed: ${error.message}. ` +
+            "Retry processing later."
+          )
+        }
+      } else if (imageExt.has(ext)) {
+        try {
+          const vision = await qwenText(
+            "Describe only directly visible construction-site details in this image.",
+            req.file.buffer,
+            item.mime
+          )
+
+          item.extracted_text = (
+            Array.isArray(vision.image_observations)
+              ? vision.image_observations
+              : []
+          ).join("\n")
+        } catch (error) {
+          item.warnings.push(
+            `Photo observations unavailable: ${error.message}`
+          )
+        }
+      } else {
+        const extracted = await extractDocument(
+          item,
+          ext
+        )
+
+        item.extracted_text = extracted.text
+
+        if (extracted.warning) {
+          item.warnings.push(
+            extracted.warning
+          )
+        }
+      }
+
+      item.classification = await classifyItem(
+        item,
+        imageExt.has(ext)
+          ? req.file.buffer
+          : null
+      ) || {
+        types: [],
+        scores: {},
+        reasons: {},
+        method: "AI unavailable",
+        needs_review: true
+      }
+
+      item.assigned_types = item.classification.types
+
+      item.summary = item.extracted_text
+        ? item.extracted_text
+            .replace(/\s+/g, " ")
+            .slice(0, 240)
+        : imageExt.has(ext)
+          ? "Photo uploaded; visual analysis unavailable"
+          : `Uploaded ${item.category} file; no text extracted`
+
+      db.evidence.push(item)
+      await persist()
+
+      res.status(201).json({
+        item: publicFile(item)
+      })
+    } catch (error) {
+      await fs.rm(
+        path.join(FILES, diskName),
+        { force: true }
+      ).catch(() => {})
+
+      next(error)
+    }
+  }
+)
+
+// RECLASSIFY
+app.post(
+  "/api/evidence/reclassify",
+  async (req, res, next) => {
+    try {
+      const project = projectName(
+        req.body?.project
+      )
+
+      const selected = db.evidence.filter(
+        item => item.project === project
+      )
+
+      for (const item of selected) {
+        const photo = item.category === "photo"
+          ? await fs.readFile(
+              path.join(FILES, item.diskName)
+            )
+          : null
+
+        const proposal = await classifyItem(
+          item,
+          photo
+        )
+
+        if (proposal) {
+          item.classification = proposal
+          item.assigned_types = proposal.types
+          item.classification_manual = false
+        }
+      }
+
+      await persist()
+
+      res.json({
+        success: true,
+        items: selected.map(publicFile),
+        count: selected.length
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// MANUAL CLASSIFICATION
+app.put(
+  "/api/evidence/:id/classification",
+  async (req, res, next) => {
+    try {
+      const item = db.evidence.find(
+        x => x.id === req.params.id
+      )
+
+      if (!item) {
+        return res.status(404).json({
+          error: "Evidence not found"
+        })
+      }
+
+      const types = req.body?.assigned_types
+
+      if (
+        !Array.isArray(types) ||
+        types.some(
+          type => !REPORT_TYPES.includes(type)
+        )
+      ) {
+        return res.status(400).json({
+          error: "Invalid report types"
+        })
+      }
+
+      item.assigned_types = [...new Set(types)]
+      item.classification_manual = true
+
+      await persist()
+
+      res.json({
+        success: true,
+        item: publicFile(item)
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// DELETE EVIDENCE
+app.delete(
+  "/api/evidence/:id",
+  async (req, res, next) => {
+    try {
+      const index = db.evidence.findIndex(
+        x => x.id === req.params.id
+      )
+
+      if (index < 0) {
+        return res.status(404).json({
+          error: "Not found"
+        })
+      }
+
+      const [item] = db.evidence.splice(
+        index,
+        1
+      )
+
+      await persist()
+
+      await fs.rm(
+        path.join(FILES, item.diskName),
+        { force: true }
+      )
+
+      res.json({
+        success: true
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// EVIDENCE FILE
+app.get(
+  "/api/evidence/:id/file",
+  async (req, res, next) => {
+    try {
+      const item = db.evidence.find(
+        x => x.id === req.params.id
+      )
+
+      if (!item) {
+        return res.sendStatus(404)
+      }
+
+      res.type(
+        item.mime || "application/octet-stream"
+      )
+
+      res.sendFile(
+        path.join(FILES, item.diskName)
+      )
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// REPORT GENERATION
+app.post(
+  "/api/drafts/generate",
+  async (req, res, next) => {
+    try {
+      const {
+        project: projectInput,
+        evidenceIds,
+        reportType,
+        notes = ""
+      } = req.body || {}
+
+      const project = projectName(projectInput)
+
+      const ids = Array.isArray(evidenceIds)
+        ? evidenceIds.slice(0, 30)
+        : []
+
+      const selected = db.evidence.filter(
+        x =>
+          x.project === project &&
+          ids.includes(x.id)
+      )
+
+      if (
+        selected.length === 0 &&
+        !String(notes).trim()
+      ) {
+        return res.status(400).json({
+          error:
+            "Upload evidence or enter notes before generating"
+        })
+      }
+
+      const warnings = selected.flatMap(
+        x => x.warnings.map(
+          warning =>
+            `${x.name}: ${warning}`
+        )
+      )
+
+      const sourceTexts = selected
+        .filter(
+          x => x.extracted_text?.trim()
+        )
+        .map(
+          x =>
+            `[${x.name}]\n` +
+            x.extracted_text.slice(0, 3500)
+        )
+
+      if (String(notes).trim()) {
+        sourceTexts.push(
+          "[Site manager notes]\n" +
+          String(notes).slice(0, 7000)
+        )
+      }
+
+      const text = sourceTexts
+        .join("\n\n")
+        .slice(0, 16000)
+
+      let report = null
+
+      const photos = selected.filter(
+        x => x.category === "photo"
+      )
+
+      try {
+        if (text.trim()) {
+          report = await qwenText(text)
+        }
+      } catch (error) {
+        warnings.push(
+          `Text analysis failed: ${error.message}`
+        )
+      }
+
+      const observations = []
+
+      for (const photo of photos.slice(0, 3)) {
+        try {
+          const buffer = await fs.readFile(
+            path.join(
+              FILES,
+              photo.diskName
+            )
+          )
+
+          const vision = await qwenText(
+            `Describe visible construction facts in ${photo.name}.`,
+            buffer,
+            photo.mime
+          )
+
+          observations.push(
+            ...(vision.image_observations || [])
+              .map(
+                observation =>
+                  `${photo.name}: ${observation}`
+              )
+          )
+
+          if (!vision.image_observations?.length) {
+            warnings.push(
+              `${photo.name}: no reliable image observations extracted`
+            )
+          }
+        } catch (error) {
+          warnings.push(
+            `${photo.name}: visual analysis failed: ${error.message}`
+          )
+        }
+      }
+
+      if (photos.length > 3) {
+        warnings.push(
+          `Only the first 3 of ${photos.length} photos were analyzed`
+        )
+      }
+
+      if (!report) {
+        report = {
+          project: null,
+          report_date: null,
+          location: null,
+          completed_work: [],
+          workers_present: null,
+          issues: [],
+          image_observations: [],
+          missing_information: [],
+          section_details: {},
+          verification_warnings: []
+        }
+      }
+
+      report.image_observations = [
+        ...new Set([
+          ...(report.image_observations || []),
+          ...observations
+        ])
+      ]
+
+      report.verification_warnings = [
+        ...new Set([
+          ...(report.verification_warnings || []),
+          ...warnings
+        ])
+      ]
+
+      if (report.project) {
+        const clean = value =>
+          String(value)
+            .toLowerCase()
+            .replace(
+              /\b(?:construction|site|project|building|complex)\b/g,
+              " "
+            )
+            .replace(/\s+/g, " ")
+            .trim()
+
+        if (
+          clean(report.project) !== clean(project)
+        ) {
+          return res.status(409).json({
+            error:
+              `Evidence describes "${report.project}" but the ` +
+              `workspace is "${project}". ` +
+              "Select evidence from one site and workday."
+          })
+        }
+      }
+
+      for (const [field, label] of [
+        ["project", "Project name"],
+        ["report_date", "Report date"],
+        ["location", "Location"]
+      ]) {
+        if (
+          [
+            "",
+            "[null]",
+            "null",
+            "today",
+            "construction site"
+          ].includes(
+            String(
+              report[field] || ""
+            ).toLowerCase()
+          )
+        ) {
+          report[field] = null
+        }
+
+        if (
+          report[field] === null &&
+          !(report.missing_information || [])
+            .includes(label)
+        ) {
+          report.missing_information = [
+            ...(report.missing_information || []),
+            label
+          ]
+        }
+      }
+
+      if (
+        !sourceTexts.length &&
+        !observations.length
+      ) {
+        report.verification_warnings.push(
+          "No readable evidence; manual review required"
+        )
+      }
+
+      res.json({
+        success: true,
+        report,
+        used_evidence: selected.map(
+          x => x.id
+        ),
+        reportType:
+          reportType ||
+          "Daily Construction Report",
+        extracted_text: text.slice(0, 12000),
+        warnings:
+          report.verification_warnings
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// DOCUMENT REPOSITORY
+app.get("/api/repository", (req, res) => {
+  res.json({
+    items: projectRecords(
+      projectName(req.query.project),
+      db.documents
+    ).map(publicDoc)
+  })
+})
+
+// SAVE EXPORTED DOCUMENT
+app.post(
+  "/api/repository",
+  upload.single("file"),
+  async (req, res, next) => {
+    if (!req.file) {
+      return res.status(400).json({
+        error: "Document file required"
+      })
+    }
+
+    const ext = path.extname(
+      req.file.originalname
+    ).toLowerCase()
+
+    if (![".pdf", ".docx"].includes(ext)) {
+      return res.status(415).json({
+        error:
+          "Only PDF and DOCX exports allowed"
+      })
+    }
+
+    const item = {
+      id: randomUUID(),
+      name: path.basename(
+        req.file.originalname
+      ),
+      diskName: "",
+      project: projectName(
+        req.body.project
+      ),
+      type: String(
+        req.body.type || "Report"
+      ).slice(0, 80),
+      created_at:
+        new Date().toISOString(),
+      date_label:
+        new Date().toLocaleString("en-GB"),
+      status: "Exported",
+      evidence_count:
+        Number(
+          req.body.evidence_count || 0
+        ),
+      summary: String(
+        req.body.summary || ""
+      ).slice(0, 6000),
+      mime: req.file.mimetype
+    }
+
+    item.diskName = item.id + ext
+
+    try {
+      await fs.writeFile(
+        path.join(
+          DOCS,
+          item.diskName
+        ),
+        req.file.buffer
+      )
+
+      const extracted = await extractPath(
+        path.join(
+          DOCS,
+          item.diskName
+        )
+      )
+
+      item.extracted_text = extracted.text
+      item.extraction_warning = extracted.warning
+
+      db.documents.push(item)
+      await persist()
+
+      res.status(201).json({
+        item: publicDoc(item)
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// DOWNLOAD REPOSITORY DOCUMENT
+app.get(
+  "/api/repository/:id/file",
+  async (req, res, next) => {
+    try {
+      const item = db.documents.find(
+        x => x.id === req.params.id
+      )
+
+      if (!item) {
+        return res.sendStatus(404)
+      }
+
+      res.download(
+        path.join(DOCS, item.diskName),
+        item.name
+      )
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// DELETE REPOSITORY DOCUMENT
+app.delete(
+  "/api/repository/:id",
+  async (req, res, next) => {
+    try {
+      const index = db.documents.findIndex(
+        x => x.id === req.params.id
+      )
+
+      if (index < 0) {
+        return res.status(404).json({
+          error: "Not found"
+        })
+      }
+
+      const [item] = db.documents.splice(
+        index,
+        1
+      )
+
+      await persist()
+
+      await fs.rm(
+        path.join(
+          DOCS,
+          item.diskName
+        ),
+        { force: true }
+      )
+
+      res.json({
+        success: true
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// PROJECT KNOWLEDGE SEARCH
+// Search actual uploaded evidence, saved reports
+// and project schedules.
+
+function searchTokens(value) {
+  const stop = new Set([
+    "a", "an", "the", "and", "or",
+    "is", "are", "was", "were", "has",
+    "have", "had", "for", "of", "at",
+    "to", "in", "on", "with", "how",
+    "what", "which", "who", "when",
+    "where", "show", "tell", "give",
+    "please", "about", "this", "that",
+    "there", "can", "from", "project",
+    "report", "reports", "document",
+    "documents", "me", "all", "any",
+    "did", "does", "do"
+  ])
+
+  const expansions = {
+    delay: [
+      "late",
+      "delayed",
+      "delivery",
+      "supplier",
+      "waiting",
+      "standstill",
+      "verspätung",
+      "lieferung"
+    ],
+    supplier: [
+      "delivery",
+      "delivered",
+      "concrete",
+      "truck",
+      "material",
+      "lieferant"
+    ],
+    safety: [
+      "incident",
+      "accident",
+      "injury",
+      "injured",
+      "hazard",
+      "guardrail",
+      "unsafe",
+      "unfall",
+      "sicherheit"
+    ],
+    incident: [
+      "safety",
+      "accident",
+      "injured",
+      "injury",
+      "hazard",
+      "unfall"
+    ],
+    weather: [
+      "rain",
+      "wind",
+      "cloud",
+      "sun",
+      "temperature",
+      "wetter",
+      "regen"
+    ],
+    progress: [
+      "finished",
+      "completed",
+      "installed",
+      "construction",
+      "schedule",
+      "completion",
+      "fortschritt"
+    ],
+    excavation: [
+      "foundation",
+      "pit",
+      "digging",
+      "soil",
+      "shoring",
+      "aushub"
+    ],
+    crane: [
+      "equipment",
+      "machine",
+      "hydraulic",
+      "lift",
+      "kran"
+    ],
+    worker: [
+      "staff",
+      "staffing",
+      "crew",
+      "personnel",
+      "arbeiter",
+      "besetzung"
+    ]
+  }
+
+  const words = (
+    String(value)
+      .toLowerCase()
+      .match(/[\p{L}\p{N}]{3,}/gu) || []
+  ).filter(
+    word => !stop.has(word)
+  )
+
+  return [
+    ...new Set(
+      words.flatMap(
+        word => [
+          word,
+          ...(expansions[word] || [])
+        ]
+      )
+    )
+  ]
+}
+
+function excerpts(
+  text,
+  size = 2300,
+  overlap = 300
+) {
+  const value = String(
+    text || ""
+  ).trim()
+
+  if (!value) return []
+
+  const result = []
+  let offset = 0
+
+  while (
+    offset < value.length &&
+    result.length < 60
+  ) {
+    const end = Math.min(
+      value.length,
+      offset + size
+    )
+
+    result.push(
+      value.slice(offset, end)
+    )
+
+    if (end >= value.length) break
+
+    offset = end - overlap
+  }
+
+  return result
+}
+
+app.post(
+  "/api/knowledge/search",
+  async (req, res, next) => {
+    try {
+      const project = projectName(
+        req.body?.project
+      )
+
+      const question = String(
+        req.body?.question || ""
+      ).trim()
+
+      if (
+        !question ||
+        question.length > 1600
+      ) {
+        return res.status(400).json({
+          error:
+            "Question must be 1-1600 characters"
+        })
+      }
+
+      const history = Array.isArray(
+        req.body?.history
+      )
+        ? req.body.history.slice(-6)
+        : []
+
+      const evidence = projectRecords(
+        project,
+        db.evidence
+      )
+
+      const documents = projectRecords(
+        project,
+        db.documents
+      )
+
+      const schedule = db.schedule.filter(
+        item => item.project === project
+      )
+
+      let changed = false
+
+      // Backfill text from previously uploaded files.
+      for (const item of evidence) {
+        if (
+          item.extracted_text?.trim() ||
+          !item.diskName
+        ) continue
+
+        const ext = path.extname(
+          item.diskName
+        ).toLowerCase()
+
+        if (![
+          ".pdf",
+          ".docx",
+          ".txt",
+          ".md",
+          ".csv",
+          ".json",
+          ".eml",
+          ".msg"
+        ].includes(ext)) continue
+
+        try {
+          if (textExt.has(ext)) {
+            item.extracted_text = (
+              await fs.readFile(
+                path.join(
+                  FILES,
+                  item.diskName
+                ),
+                "utf8"
+              )
+            ).slice(0, 100000)
+          } else {
+            const extracted = await extractPath(
+              path.join(
+                FILES,
+                item.diskName
+              )
+            )
+
+            item.extracted_text =
+              extracted.text
+          }
+
+          changed = true
+        } catch (error) {
+          console.warn(
+            `Cannot index evidence ${item.name}: ${error.message}`
+          )
+        }
+      }
+
+      // Extract text from old exported reports.
+      for (const document of documents) {
+        if (
+          document.extracted_text?.trim() ||
+          !document.diskName ||
+          document.extraction_attempted
+        ) continue
+
+        try {
+          const extracted = await extractPath(
+            path.join(
+              DOCS,
+              document.diskName
+            )
+          )
+
+          document.extracted_text =
+            extracted.text
+
+          document.extraction_warning =
+            extracted.warning
+
+          document.extraction_attempted = true
+
+          changed = true
+        } catch (error) {
+          console.warn(
+            `Cannot index report ${document.name}: ${error.message}`
+          )
+        }
+      }
+
+      if (changed) {
+        await persist()
+      }
+
+      const records = [
+        ...evidence
+          .filter(
+            x => String(
+              x.extracted_text ||
+              x.transcription?.text ||
+              x.summary ||
+              ""
+            ).trim()
+          )
+          .map(x => ({
+            key: `e-${x.id}`,
+            kind: "E",
+            name: x.name,
+            type: x.category === "voice"
+              ? "Voice recording"
+              : x.category === "photo"
+                ? "Site photo"
+                : "Uploaded evidence",
+            text:
+              x.extracted_text ||
+              x.transcription?.text ||
+              x.summary,
+            url: `/api/evidence/${x.id}/file`,
+            date: x.uploaded_at,
+            icon: "📎"
+          })),
+
+        ...documents
+          .filter(
+            x => String(
+              x.extracted_text ||
+              x.summary ||
+              ""
+            ).trim()
+          )
+          .map(x => ({
+            key: `d-${x.id}`,
+            kind: "D",
+            name: x.name,
+            type: x.extracted_text?.trim()
+              ? "Saved report"
+              : "Report summary only",
+            text:
+              x.extracted_text ||
+              x.summary,
+            url: `/api/repository/${x.id}/file`,
+            date: x.created_at,
+            icon: "📄"
+          })),
+
+        ...schedule.map(
+          (x, index) => ({
+            key: `s-${x.id || index}`,
+            kind: "S",
+            name:
+              x.Activity ||
+              "Schedule entry",
+            type: "Project schedule",
+            url: null,
+            date: "",
+            icon: "📊",
+            text: JSON.stringify({
+              activity: x.Activity,
+              trade: x.Trade,
+              planned_progress:
+                x["Planned Progress"],
+              actual_progress:
+                x["Actual Progress"],
+              planned_completion:
+                x["Planned Completion"],
+              actual_completion:
+                x["Actual Completion"],
+              root_cause:
+                x["Root Cause"]
+            })
+          })
+        )
+      ]
+
+      if (!records.length) {
+        return res.json({
+          success: true,
+          result: {
+            role: "assistant",
+            found: false,
+            answer:
+              `No readable uploads, saved reports or ` +
+              `schedule entries found for ${project}.`,
+            documents: [],
+            sources: [],
+            source_count: 0
+          },
+          search_mode: "qwen3 grounded"
+        })
+      }
+
+      const terms = searchTokens(question)
+
+      const summaryQuestion =
+        /summari[sz]|overview|progress|overall|this week|last week|total|project status/i
+          .test(question)
+
+      const candidates = records.flatMap(
+        (record, order) =>
+          excerpts(record.text).map(
+            (text, chunk) => {
+              const title = (
+                `${record.name} ${record.type}`
+              ).toLowerCase()
+
+              const body = text.toLowerCase()
+
+              const hits = terms.reduce(
+                (score, term) =>
+                  score +
+                  (
+                    body.includes(term)
+                      ? 2
+                      : 0
+                  ) +
+                  (
+                    title.includes(term)
+                      ? 3
+                      : 0
+                  ),
+                0
+              )
+
+              const phrase = body.includes(
+                question.toLowerCase()
+              ) ? 6 : 0
+
+              const score =
+                hits +
+                phrase +
+                Math.max(
+                  0,
+                  1.5 - order * 0.02
+                ) +
+                (
+                  summaryQuestion &&
+                  chunk === 0
+                    ? 2
+                    : 0
+                )
+
+              return {
+                ...record,
+                chunk,
+                text,
+                score
+              }
+            }
+          )
+      )
+
+      candidates.sort(
+        (a, b) => b.score - a.score
+      )
+
+      const selected = []
+      const perFile = new Map()
+
+      for (const chunk of candidates) {
+        if (
+          selected.length >= 10
+        ) break
+
+        const current = perFile.get(
+          chunk.key
+        ) || 0
+
+        if (
+          current >= (
+            summaryQuestion
+              ? 1
+              : 2
+          )
+        ) continue
+
+        selected.push(chunk)
+
+        perFile.set(
+          chunk.key,
+          current + 1
+        )
+      }
+
+      const counters = {
+        E: 0,
+        D: 0,
+        S: 0
+      }
+
+      const sources = selected.map(
+        chunk => ({
+          ...chunk,
+          id:
+            `${chunk.kind}` +
+            `${++counters[chunk.kind]}`
+        })
+      )
+
+      const ai = await aiRequest(
+        `${QWEN_URL}/ask`,
+        JSON.stringify({
+          project,
+          question,
+          history,
+          sources: sources.map(
+            source => ({
+              id: source.id,
+              name: source.name,
+              type: source.type,
+              text: source.text
+            })
+          )
+        }),
+        {
+          "Content-Type":
+            "application/json"
+        },
+        300000
+      )
+
+      const reply = ai.result || {}
+
+      const mentioned = Array.isArray(
+        reply.source_ids
+      )
+        ? reply.source_ids
+        : []
+
+      const used = mentioned
+        .map(
+          id => sources.find(
+            source =>
+              source.id === id
+          )
+        )
+        .filter(Boolean)
+
+      const dedup = [
+        ...new Map(
+          used.map(
+            source => [
+              source.key,
+              source
+            ]
+          )
+        ).values()
+      ]
+
+      const valid =
+        reply.found === true &&
+        dedup.length > 0
+
+      const details = dedup.map(
+        source => ({
+          id: source.key.slice(2),
+          name: source.name,
+          type: source.type,
+          url: source.url,
+          date: source.date,
+          icon: source.icon,
+          snippet: source.text.slice(0, 280)
+        })
+      )
+
+      res.json({
+        success: true,
+        search_mode: "qwen3 grounded",
+        result: {
+          role: "assistant",
+          found: valid,
+          answer: valid
+            ? String(reply.answer || "")
+            : (
+                "I couldn't verify that from the " +
+                "uploaded records for this project."
+              ),
+          documents: details.map(
+            source => [
+              source.icon,
+              source.name,
+              source.type,
+              source.url
+            ]
+          ),
+          sources: details,
+          source_count: details.length
+        }
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// GET PROJECT SCHEDULE
+app.get("/api/schedule", (req, res) => {
+  res.json({
+    items: db.schedule.filter(
+      item =>
+        item.project === projectName(
+          req.query.project
+        )
+    )
+  })
+})
+
+// SAVE PROJECT SCHEDULE
+app.put(
+  "/api/schedule",
+  async (req, res, next) => {
+    try {
+      const project = projectName(
+        req.body?.project
+      )
+
+      if (
+        !Array.isArray(req.body?.items) ||
+        req.body.items.length > 100
+      ) {
+        return res.status(400).json({
+          error:
+            "Expected up to 100 schedule rows"
+        })
+      }
+
+      const items = req.body.items.map(
+        (value, index) => ({
+          id: String(
+            value.id ||
+            randomUUID()
+          ),
+          project,
+          Activity: String(
+            value.Activity ||
+            `Activity ${index + 1}`
+          ).slice(0, 140),
+          Trade: String(
+            value.Trade || ""
+          ).slice(0, 100),
+          "Planned Progress": Math.max(
+            0,
+            Math.min(
+              100,
+              Number(
+                value["Planned Progress"]
+              ) || 0
+            )
+          ),
+          "Actual Progress": Math.max(
+            0,
+            Math.min(
+              100,
+              Number(
+                value["Actual Progress"]
+              ) || 0
+            )
+          ),
+          "Planned Completion": String(
+            value["Planned Completion"] || ""
+          ),
+          "Actual Completion": String(
+            value["Actual Completion"] || ""
+          ),
+          "Root Cause": String(
+            value["Root Cause"] || ""
+          )
+        })
+      )
+
+      db.schedule = db.schedule
+        .filter(
+          item =>
+            item.project !== project
+        )
+        .concat(items)
+
+      await persist()
+
+      res.json({
+        items
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// ERROR HANDLER
+app.use(
+  (error, req, res, next) => {
+    console.error(
+      `[${req.method} ${req.path}]`,
+      error
+    )
+
+    if (error instanceof multer.MulterError) {
+      return res.status(400).json({
+        error: error.message
+      })
+    }
+
+    const bad =
+      /unsupported|invalid|missing|required|too large/i
+        .test(error.message || "")
+
+    res.status(
+      bad
+        ? 400
+        : 502
+    ).json({
+      error:
+        error.message ||
+        "Server error"
+    })
+  }
+)
+
+await setup()
+
+app.listen(
+  PORT,
+  process.env.HOST || "127.0.0.1",
+  () => console.log(
+    `Express running on http://localhost:${PORT}; local storage: ${DATA}`
+  )
+)

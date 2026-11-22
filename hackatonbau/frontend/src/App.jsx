@@ -1,16 +1,13 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   DAILY_REPORT,
-  DEFAULT_REPOSITORY_DOCS,
   PROJECTS,
   REPORT_LANGUAGES,
   REPORT_TYPES,
   SAMPLE_EVIDENCE,
-  SAMPLE_EVIDENCE_SIZES,
-  UNASSIGNED,
-} from "./data/mockData";
+  SAMPLE_EVIDENCE_SIZES
+} from "./data/mockData"
 import {
-  answerQuestion,
   classifyEvidence,
   evidenceCategory,
   evidenceFileTypeLabel,
@@ -18,144 +15,359 @@ import {
   formatIdStamp,
   formatNowTimestamp,
   formatTimeHHMM,
-  formatTodayDisplay,
   noticeToEditorText,
   parseLlmReport,
   reportToEditorText,
-  simulateLlmReport,
-} from "./utils/documentUtils";
-import { api, formRequest, projectQuery, fileUrl } from "./api/client";
-import { aiReportToTemplate } from "./utils/aiReportAdapter";
-import Sidebar from "./components/Sidebar";
-import DailyDocumentationTab from "./components/DailyDocumentationTab";
-import KnowledgeHubTab from "./components/KnowledgeHubTab";
-import PerformanceMonitoringTab from "./components/PerformanceMonitoringTab";
-import MeetingIntelligenceTab from "./components/MeetingIntelligenceTab";
-import ProjectAssistantDrawer from "./components/ProjectAssistantDrawer";
-import { EvidencePreviewModal, RepositoryDocumentModal } from "./components/Modals";
-import ToastContainer from "./components/ToastContainer";
+  simulateLlmReport
+} from "./utils/documentUtils"
+import { api, formRequest, projectQuery, fileUrl } from "./api/client"
+import { aiReportToTemplate } from "./utils/aiReportAdapter"
+import Sidebar from "./components/Sidebar"
+import DailyDocumentationTab from "./components/DailyDocumentationTab"
+import KnowledgeHubTab from "./components/KnowledgeHubTab"
+import PerformanceMonitoringTab from "./components/PerformanceMonitoringTab"
+import MeetingIntelligenceTab from "./components/MeetingIntelligenceTab"
+import ProjectAssistantDrawer from "./components/ProjectAssistantDrawer"
+import { EvidencePreviewModal, RepositoryDocumentModal } from "./components/Modals"
+import ToastContainer from "./components/ToastContainer"
 import { translateReportTemplate } from "./utils/translateReport"
 
 const TABS = [
   { id: "workflow", label: "🏗️ Daily Documentation" },
   { id: "knowledge", label: "📚 Knowledge Hub" },
   { id: "performance", label: "📊 Performance Monitoring" },
-  { id: "meetings", label: "🤝 Meeting Intelligence" },
-];
+  { id: "meetings", label: "🤝 Meeting Intelligence" }
+]
 
 export default function App() {
-  const [project, setProject] = useState(PROJECTS[0]);
-  const [isRecording, setIsRecording] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [freeformNotes, setFreeformNotes] = useState("");
-  const mediaRecorderRef = useRef(null);
-  const mediaStreamRef = useRef(null);
-  const [activeTab, setActiveTab] = useState("workflow");
-  const [pmActionFeedback, setPmActionFeedback] = useState(null);
+  const [project, setProject] = useState(() => {
+    try {
+      return localStorage.getItem("baudackel-active-project") || PROJECTS[0]
+    } catch {
+      return PROJECTS[0]
+    }
+  })
+  const [projects, setProjects] = useState(PROJECTS.map(name => ({ name })))
+  const [projectsLoading, setProjectsLoading] = useState(true)
+  const projectRef = useRef(project)
+  projectRef.current = project
+
+  const [isRecording, setIsRecording] = useState(false)
+  const [isUploading, setIsUploading] = useState(false)
+  const [isGenerating, setIsGenerating] = useState(false)
+  const [freeformNotes, setFreeformNotes] = useState("")
+  const mediaRecorderRef = useRef(null)
+  const mediaStreamRef = useRef(null)
+  const [activeTab, setActiveTab] = useState("workflow")
+  const [pmActionFeedback, setPmActionFeedback] = useState(null)
 
   // Evidence state
-  const [sampleNames, setSampleNames] = useState([]);
-  const [uploadedFileMap, setUploadedFileMap] = useState({});
-  const [evidenceTimes, setEvidenceTimes] = useState({});
-  const [removedNames, setRemovedNames] = useState(() => new Set());
-  const [lastUploadFeedback, setLastUploadFeedback] = useState(null);
+  const [sampleNames, setSampleNames] = useState([])
+  const [uploadedFileMap, setUploadedFileMap] = useState({})
+  const [evidenceTimes, setEvidenceTimes] = useState({})
+  const [removedNames, setRemovedNames] = useState(() => new Set())
+  const [lastUploadFeedback, setLastUploadFeedback] = useState(null)
 
-  // Classification state: assignedReportTypes maps fileName -> string[] (supports multiple report types per file)
-  const [assignedReportTypes, setAssignedReportTypes] = useState({});
-  const [manuallyAssigned, setManuallyAssigned] = useState(() => new Set());
-  const [reviewType, setReviewType] = useState(null);
-  const [reviewedReportTypes, setReviewedReportTypes] = useState(() => new Set());
-  const [classificationConfirmed, setClassificationConfirmed] = useState(false);
+  // Classification state
+  const [assignedReportTypes, setAssignedReportTypes] = useState({})
+  const [manuallyAssigned, setManuallyAssigned] = useState(() => new Set())
+  const [reviewType, setReviewType] = useState(null)
+  const [reviewedReportTypes, setReviewedReportTypes] = useState(() => new Set())
+  const [classificationConfirmed, setClassificationConfirmed] = useState(false)
 
-  // Clarification & Draft state
-  const [clarification, setClarification] = useState(null);
-  const [reportType, setReportType] = useState(DAILY_REPORT);
-  const [reportLanguage, setReportLanguage] = useState("English");
-  const [noticeTypeChoice, setNoticeTypeChoice] = useState("Delay Notice");
-  const [noticeSummaryInput, setNoticeSummaryInput] = useState("");
-  const [generatedDocument, setGeneratedDocument] = useState(null);
-  const [llmReportJson, setLlmReportJson] = useState(null);
-  const [llmPrompt, setLlmPrompt] = useState(null);
-  const [documentDraft, setDocumentDraft] = useState("");
-  const [savedDraft, setSavedDraft] = useState(null);
-  const [lockedTimestamp, setLockedTimestamp] = useState(null);
-  const [lockedDocId, setLockedDocId] = useState(null);
-  const [clientVersion, setClientVersion] = useState(false);
-  const [exported, setExported] = useState(false);
-  const [exportSuccessMsg, setExportSuccessMsg] = useState(null);
+  // Draft state
+  const [clarification, setClarification] = useState(null)
+  const [reportType, setReportType] = useState(DAILY_REPORT)
+  const [reportLanguage, setReportLanguage] = useState("English")
+  const [noticeTypeChoice, setNoticeTypeChoice] = useState("Delay Notice")
+  const [noticeSummaryInput, setNoticeSummaryInput] = useState("")
+  const [generatedDocument, setGeneratedDocument] = useState(null)
+  const [llmReportJson, setLlmReportJson] = useState(null)
+  const [llmPrompt, setLlmPrompt] = useState(null)
+  const [documentDraft, setDocumentDraft] = useState("")
+  const [savedDraft, setSavedDraft] = useState(null)
+  const [lockedTimestamp, setLockedTimestamp] = useState(null)
+  const [lockedDocId, setLockedDocId] = useState(null)
+  const [exported, setExported] = useState(false)
+  const [exportSuccessMsg, setExportSuccessMsg] = useState(null)
 
-  // Knowledge Hub & Assistant state
-  const [repositoryDocs, setRepositoryDocs] = useState([]);
-  const [recentSearches, setRecentSearches] = useState([
-    "When was the last supplier delay?",
-    "Show all safety incidents.",
-  ]);
-  const [kbMessages, setKbMessages] = useState([]);
-  const [assistantOpen, setAssistantOpen] = useState(false);
+  // Knowledge Hub and Assistant state
+  const [repositoryDocs, setRepositoryDocs] = useState([])
+  const [recentSearches, setRecentSearches] = useState([])
+  const [kbMessages, setKbMessages] = useState([])
+  const [assistantOpen, setAssistantOpen] = useState(false)
 
-  // Modals & Toasts
-  const [previewEvidenceItem, setPreviewEvidenceItem] = useState(null);
-  const [previewRepoDoc, setPreviewRepoDoc] = useState(null);
-  const [toasts, setToasts] = useState([]);
+  // Modals and notifications
+  const [previewEvidenceItem, setPreviewEvidenceItem] = useState(null)
+  const [previewRepoDoc, setPreviewRepoDoc] = useState(null)
+  const [toasts, setToasts] = useState([])
 
   const addToast = useCallback((message, icon = "✅") => {
-    const id = `${Date.now()}-${Math.random()}`;
-    setToasts((prev) => [...prev, { id, message, icon }]);
+    const id = `${Date.now()}-${Math.random()}`
+    setToasts(prev => [...prev, { id, message, icon }])
     setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 3500);
-  }, []);
+      setToasts(prev => prev.filter(t => t.id !== id))
+    }, 3500)
+  }, [])
 
-  // Restore real project evidence and exported documents after refresh.
+  // Load the real projects registered in Express.
+  const refreshProjects = useCallback(async () => {
+    const response = await api("/api/projects")
+    const items = Array.isArray(response.items) ? response.items : []
+    if (items.length) setProjects(items)
+    return items
+  }, [])
+
   useEffect(() => {
-    let live = true;
-    setSampleNames([]);
-    setUploadedFileMap({});
-    setRemovedNames(new Set());
-    setAssignedReportTypes({});
-    setRepositoryDocs([]);
-    Promise.all([api(`/api/evidence${projectQuery(project)}`), api(`/api/repository${projectQuery(project)}`)])
-      .then(async ([evidence, docs]) => {
-        if (!live) return;
-        const files = {};
-        const types = {};
-        for (const item of evidence.items || []) {
-          let name=item.name, n=2;
-          while(files[name]) { name=item.name.replace(/(\.[^.]+)?$/, ` (${n++})$1`); }
-          files[name] = { id:item.id, size:item.size, uploadedAt:new Date(item.uploaded_at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}), objectUrl:fileUrl(item.url), dataUrl:null, extractedText:item.extracted_text, transcription:item.transcription, warnings:item.warnings, summary:item.summary };
-          types[name] = Array.isArray(item.assigned_types) ? item.assigned_types : [classifyEvidence(name)];
-        }
-        setUploadedFileMap(files);
-        setAssignedReportTypes(types);
-        setManuallyAssigned(new Set((evidence.items || []).filter(item => item.classification_manual).map(item => Object.entries(files).find(([,meta]) => meta.id === item.id)?.[0]).filter(Boolean)));
-        setRepositoryDocs(docs.items || []);
-        // Images need data URLs for jsPDF and Word embedding, not just URLs.
-        for (const [name, meta] of Object.entries(files)) {
-          if (evidenceCategory(name)!=="photo") continue;
-          fetch(meta.objectUrl).then(r=>r.blob()).then(blob=>new Promise(resolve=>{
-            const reader=new FileReader(); reader.onload=()=>resolve(reader.result); reader.readAsDataURL(blob);
-          })).then(dataUrl=>{ if(live) setUploadedFileMap(prev=>prev[name] ? {...prev,[name]:{...prev[name],dataUrl}} : prev); }).catch(()=>{});
+    let live = true
+
+    refreshProjects()
+      .then(items => {
+        if (!live) return
+        if (items.length && !items.some(item => item.name === projectRef.current)) {
+          projectRef.current = items[0].name
+          setProject(items[0].name)
         }
       })
-      .catch(err=>{ if(live) addToast(`Backend not available: ${err.message}`,"⚠️"); });
-    return ()=>{live=false};
-  }, [project, addToast]);
+      .catch(error => {
+        if (live) addToast(`Project list unavailable: ${error.message}`, "⚠️")
+      })
+      .finally(() => {
+        if (live) setProjectsLoading(false)
+      })
 
-  const getUploadTime = useCallback(
-    (fileName) => {
-      if (SAMPLE_EVIDENCE[fileName]) return SAMPLE_EVIDENCE[fileName];
-      return evidenceTimes[fileName] || formatTimeHHMM();
-    },
-    [evidenceTimes]
-  );
+    return () => { live = false }
+  }, [refreshProjects, addToast])
 
-  // Build active evidence records
+  // Prevent project changes while an upload or AI operation is running.
+  const handleProjectChange = useCallback((next, { skipConfirm = false } = {}) => {
+    if (!next || next === projectRef.current) return true
+
+    if (isUploading || isGenerating || isRecording) {
+      addToast("Finish uploading, generating or recording before switching sites", "⚠️")
+      return false
+    }
+
+    if (
+      !skipConfirm &&
+      documentDraft.trim() &&
+      !exported &&
+      !window.confirm(
+        "This report draft has not been exported. Switching sites will clear it. Continue?"
+      )
+    ) {
+      return false
+    }
+
+    projectRef.current = next
+    setProject(next)
+
+    try {
+      localStorage.setItem("baudackel-active-project", next)
+    } catch {}
+
+    return true
+  }, [
+    isUploading,
+    isGenerating,
+    isRecording,
+    documentDraft,
+    exported,
+    addToast
+  ])
+
+  const handleCreateProject = useCallback(async name => {
+    const cleanName = String(name || "").trim()
+
+    if (cleanName.length < 3) {
+      throw new Error("Project name needs at least 3 characters")
+    }
+
+    if (isUploading || isGenerating || isRecording) {
+      throw new Error("Finish the current upload, report or recording first")
+    }
+
+    if (
+      documentDraft.trim() &&
+      !exported &&
+      !window.confirm(
+        "Your current report draft has not been exported. Create and switch to the new site?"
+      )
+    ) {
+      return null
+    }
+
+    const response = await api("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: cleanName })
+    })
+
+    const created = response.project
+
+    await refreshProjects()
+    handleProjectChange(created, { skipConfirm: true })
+
+    addToast(`Project ${created} is ready`, "✅")
+    return created
+  }, [
+    refreshProjects,
+    handleProjectChange,
+    isUploading,
+    isGenerating,
+    isRecording,
+    documentDraft,
+    exported,
+    addToast
+  ])
+
+  // Restore only the active project's uploaded files and exported reports.
+  useEffect(() => {
+    let live = true
+
+    // Clear all temporary state from the previous project.
+    setSampleNames([])
+    setUploadedFileMap({})
+    setEvidenceTimes({})
+    setRemovedNames(new Set())
+    setLastUploadFeedback(null)
+    setAssignedReportTypes({})
+    setManuallyAssigned(new Set())
+    setReviewType(null)
+    setReviewedReportTypes(new Set())
+    setClassificationConfirmed(false)
+    setClarification(null)
+    setFreeformNotes("")
+    setReportType(DAILY_REPORT)
+    setReportLanguage("English")
+    setNoticeTypeChoice("Delay Notice")
+    setNoticeSummaryInput("")
+    setGeneratedDocument(null)
+    setLlmReportJson(null)
+    setLlmPrompt(null)
+    setDocumentDraft("")
+    setSavedDraft(null)
+    setLockedTimestamp(null)
+    setLockedDocId(null)
+    setExported(false)
+    setExportSuccessMsg(null)
+    setRepositoryDocs([])
+    setKbMessages([])
+    setRecentSearches([])
+    setAssistantOpen(false)
+    setPmActionFeedback(null)
+    setPreviewEvidenceItem(null)
+    setPreviewRepoDoc(null)
+
+    Promise.all([
+      api(`/api/evidence${projectQuery(project)}`),
+      api(`/api/repository${projectQuery(project)}`)
+    ])
+      .then(async ([evidence, docs]) => {
+        if (!live) return
+
+        const files = {}
+        const types = {}
+
+        for (const item of evidence.items || []) {
+          let name = item.name
+          let n = 2
+
+          while (files[name]) {
+            name = item.name.replace(/(\.[^.]+)?$/, ` (${n++})$1`)
+          }
+
+          files[name] = {
+            id: item.id,
+            size: item.size,
+            uploadedAt: new Date(item.uploaded_at).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit"
+            }),
+            objectUrl: fileUrl(item.url),
+            dataUrl: null,
+            extractedText: item.extracted_text,
+            transcription: item.transcription,
+            warnings: item.warnings,
+            summary: item.summary
+          }
+
+          types[name] = Array.isArray(item.assigned_types)
+            ? item.assigned_types
+            : [classifyEvidence(name)]
+        }
+
+        setUploadedFileMap(files)
+        setAssignedReportTypes(types)
+
+        setManuallyAssigned(
+          new Set(
+            (evidence.items || [])
+              .filter(item => item.classification_manual)
+              .map(item =>
+                Object.entries(files).find(([, meta]) =>
+                  meta.id === item.id
+                )?.[0]
+              )
+              .filter(Boolean)
+          )
+        )
+
+        setRepositoryDocs(docs.items || [])
+
+        // Load real photo data URLs for PDF and Word export.
+        for (const [name, meta] of Object.entries(files)) {
+          if (evidenceCategory(name) !== "photo") continue
+
+          fetch(meta.objectUrl)
+            .then(response => response.blob())
+            .then(blob => new Promise(resolve => {
+              const reader = new FileReader()
+              reader.onload = () => resolve(reader.result)
+              reader.readAsDataURL(blob)
+            }))
+            .then(dataUrl => {
+              if (!live) return
+
+              setUploadedFileMap(prev =>
+                prev[name]
+                  ? {
+                      ...prev,
+                      [name]: {
+                        ...prev[name],
+                        dataUrl
+                      }
+                    }
+                  : prev
+              )
+            })
+            .catch(() => {})
+        }
+      })
+      .catch(error => {
+        if (live) {
+          addToast(`Backend not available: ${error.message}`, "⚠️")
+        }
+      })
+
+    return () => {
+      live = false
+    }
+  }, [project, addToast])
+
+  const getUploadTime = useCallback(fileName => {
+    if (SAMPLE_EVIDENCE[fileName]) return SAMPLE_EVIDENCE[fileName]
+    return evidenceTimes[fileName] || formatTimeHHMM()
+  }, [evidenceTimes])
+
   const evidenceRecords = useMemo(() => {
-    const records = {};
+    const records = {}
+
     for (const name of sampleNames) {
-      if (removedNames.has(name)) continue;
-      const sizeBytes = SAMPLE_EVIDENCE_SIZES[name] || 128_000;
+      if (removedNames.has(name)) continue
+
+      const sizeBytes = SAMPLE_EVIDENCE_SIZES[name] || 128000
+
       records[name] = {
         name,
         file_type: evidenceFileTypeLabel(name),
@@ -163,12 +375,15 @@ export default function App() {
         uploaded_at: SAMPLE_EVIDENCE[name] || "10:00",
         size_bytes: sizeBytes,
         size_label: formatFileSize(sizeBytes),
-        source: "Sample",
-      };
+        source: "Sample"
+      }
     }
+
     for (const [name, fileData] of Object.entries(uploadedFileMap)) {
-      if (removedNames.has(name)) continue;
-      const sizeBytes = fileData.size || 0;
+      if (removedNames.has(name)) continue
+
+      const sizeBytes = fileData.size || 0
+
       records[name] = {
         name,
         file_type: evidenceFileTypeLabel(name),
@@ -176,174 +391,363 @@ export default function App() {
         uploaded_at: evidenceTimes[name] || fileData.uploadedAt,
         size_bytes: sizeBytes,
         size_label: formatFileSize(sizeBytes),
-        source: "Uploaded",
-      };
+        source: "Uploaded"
+      }
     }
-    return records;
-  }, [sampleNames, uploadedFileMap, removedNames, evidenceTimes]);
 
-  const evidenceNames = useMemo(() => Object.keys(evidenceRecords), [evidenceRecords]);
+    return records
+  }, [
+    sampleNames,
+    uploadedFileMap,
+    removedNames,
+    evidenceTimes
+  ])
 
-  // Photo numbering (101+) and data URLs for real uploaded photos
+  const evidenceNames = useMemo(
+    () => Object.keys(evidenceRecords),
+    [evidenceRecords]
+  )
+
   const { photoIds, photoDataUrls } = useMemo(() => {
     const photoNames = evidenceNames
-      .filter((name) => evidenceCategory(name) === "photo")
-      .sort((a, b) => (evidenceRecords[a]?.uploaded_at || "").localeCompare(evidenceRecords[b]?.uploaded_at || ""));
-    const ids = {};
-    const urls = {};
+      .filter(name => evidenceCategory(name) === "photo")
+      .sort((a, b) =>
+        (evidenceRecords[a]?.uploaded_at || "").localeCompare(
+          evidenceRecords[b]?.uploaded_at || ""
+        )
+      )
+
+    const ids = {}
+    const urls = {}
+
     photoNames.forEach((name, idx) => {
-      const pid = 101 + idx;
-      ids[name] = pid;
+      const pid = 101 + idx
+      ids[name] = pid
+
       if (uploadedFileMap[name]?.dataUrl) {
-        urls[pid] = uploadedFileMap[name].dataUrl;
+        urls[pid] = uploadedFileMap[name].dataUrl
       }
-    });
-    return { photoIds: ids, photoDataUrls: urls };
-  }, [evidenceNames, evidenceRecords, uploadedFileMap]);
+    })
+
+    return { photoIds: ids, photoDataUrls: urls }
+  }, [evidenceNames, evidenceRecords, uploadedFileMap])
 
   const photosByType = useMemo(() => {
-    const map = {};
+    const map = {}
+
     for (const rt of Object.keys(REPORT_TYPES)) {
       const files = evidenceNames
-        .filter((name) => (assignedReportTypes[name] || []).includes(rt) && photoIds[name])
-        .sort((a, b) => (evidenceRecords[a]?.uploaded_at || "").localeCompare(evidenceRecords[b]?.uploaded_at || ""));
-      map[rt] = files.map((name) => [photoIds[name], name]);
+        .filter(name =>
+          (assignedReportTypes[name] || []).includes(rt) &&
+          photoIds[name]
+        )
+        .sort((a, b) =>
+          (evidenceRecords[a]?.uploaded_at || "").localeCompare(
+            evidenceRecords[b]?.uploaded_at || ""
+          )
+        )
+
+      map[rt] = files.map(name => [photoIds[name], name])
     }
-    return map;
-  }, [evidenceNames, assignedReportTypes, photoIds, evidenceRecords]);
 
-  // Handlers: Evidence
+    return map
+  }, [evidenceNames, assignedReportTypes, photoIds, evidenceRecords])
+
+  // Sample evidence
   const handleLoadSample = useCallback(() => {
-    const names = Object.keys(SAMPLE_EVIDENCE);
-    setSampleNames(names);
-    setAssignedReportTypes((prev) => {
-      const next = { ...prev };
-      names.forEach((n) => {
-        if (!next[n]) next[n] = [classifyEvidence(n)];
-      });
-      return next;
-    });
-    setClassificationConfirmed(false);
-    const msg = `${names.length} files added to today's evidence workspace (stored in session state, ready for classification).`;
-    setLastUploadFeedback(msg);
-    addToast(msg, "✅");
-  }, [addToast]);
+    const names = Object.keys(SAMPLE_EVIDENCE)
 
+    setSampleNames(names)
+
+    setAssignedReportTypes(prev => {
+      const next = { ...prev }
+
+      names.forEach(name => {
+        if (!next[name]) next[name] = [classifyEvidence(name)]
+      })
+
+      return next
+    })
+
+    setClassificationConfirmed(false)
+
+    const msg = `${names.length} files added to today's evidence workspace (stored in session state, ready for classification).`
+
+    setLastUploadFeedback(msg)
+    addToast(msg, "✅")
+  }, [addToast])
+
+  // Upload real files into the currently selected project's backend records.
   const handleFilesUpload = useCallback(async files => {
-    if (!files?.length) return;
-    setIsUploading(true);
+    if (!files?.length) return
+
+    setIsUploading(true)
+
     try {
       for (const file of files) {
         try {
-          const response = await formRequest("/api/evidence", { project }, file);
-          const item = response.item;
-          const nowTime = formatTimeHHMM();
-          let name = file.name;
-          // Preserve duplicates without confusing their server-generated IDs.
-          const suffix = item.id.slice(0,6);
-          if (uploadedFileMap[name]) name = file.name.replace(/(\.[^.]+)?$/, `_${suffix}$1`);
-          const photo = evidenceCategory(file.name)==="photo";
-          const dataUrl = photo ? await new Promise(resolve=>{
-            const reader = new FileReader(); reader.onload=()=>resolve(String(reader.result||"")); reader.readAsDataURL(file);
-          }) : null;
-          setRemovedNames(prev=>{const next=new Set(prev);next.delete(name);return next});
-          setUploadedFileMap(prev=>({...prev,[name]:{
-            id:item.id,size:file.size,uploadedAt:nowTime,objectUrl:fileUrl(item.url),
-            dataUrl,extractedText:item.extracted_text,transcription:item.transcription,
-            warnings:item.warnings,summary:item.summary
-          }}));
-          setEvidenceTimes(prev=>({...prev,[name]:nowTime}));
-          setAssignedReportTypes(prev=>({...prev,[name]:Array.isArray(item.assigned_types) ? item.assigned_types : [classifyEvidence(file.name)]}));
-          if(item.warnings?.length) addToast(`${file.name}: ${item.warnings.join("; ")}`,"⚠️");
-          else addToast(`${file.name} uploaded and processed`,"✅");
-        } catch(err) { addToast(`Upload failed for ${file.name}: ${err.message}`,"⚠️"); }
+          const response = await formRequest(
+            "/api/evidence",
+            { project },
+            file
+          )
+
+          const item = response.item
+          const nowTime = formatTimeHHMM()
+
+          let name = file.name
+          const suffix = item.id.slice(0, 6)
+
+          if (uploadedFileMap[name]) {
+            name = file.name.replace(
+              /(\.[^.]+)?$/,
+              `_${suffix}$1`
+            )
+          }
+
+          const photo = evidenceCategory(file.name) === "photo"
+
+          const dataUrl = photo
+            ? await new Promise(resolve => {
+                const reader = new FileReader()
+                reader.onload = () => resolve(String(reader.result || ""))
+                reader.readAsDataURL(file)
+              })
+            : null
+
+          setRemovedNames(prev => {
+            const next = new Set(prev)
+            next.delete(name)
+            return next
+          })
+
+          setUploadedFileMap(prev => ({
+            ...prev,
+            [name]: {
+              id: item.id,
+              size: file.size,
+              uploadedAt: nowTime,
+              objectUrl: fileUrl(item.url),
+              dataUrl,
+              extractedText: item.extracted_text,
+              transcription: item.transcription,
+              warnings: item.warnings,
+              summary: item.summary
+            }
+          }))
+
+          setEvidenceTimes(prev => ({
+            ...prev,
+            [name]: nowTime
+          }))
+
+          setAssignedReportTypes(prev => ({
+            ...prev,
+            [name]: Array.isArray(item.assigned_types)
+              ? item.assigned_types
+              : [classifyEvidence(file.name)]
+          }))
+
+          if (item.warnings?.length) {
+            addToast(`${file.name}: ${item.warnings.join("; ")}`, "⚠️")
+          } else {
+            addToast(`${file.name} uploaded and processed`, "✅")
+          }
+        } catch (error) {
+          addToast(`Upload failed for ${file.name}: ${error.message}`, "⚠️")
+        }
       }
-      setClassificationConfirmed(false);
-      setLastUploadFeedback(`${files.length} file(s) submitted to local backend.`);
-    } finally { setIsUploading(false); }
-  },[project, uploadedFileMap, addToast]);
+
+      setClassificationConfirmed(false)
+      setLastUploadFeedback(`${files.length} file(s) submitted to local backend.`)
+      refreshProjects().catch(() => {})
+    } finally {
+      setIsUploading(false)
+    }
+  }, [project, uploadedFileMap, addToast, refreshProjects])
 
   const handleQuickDictate = useCallback(async () => {
     if (mediaRecorderRef.current?.state === "recording") {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-      return;
+      mediaRecorderRef.current.stop()
+      setIsRecording(false)
+      return
     }
+
     try {
-      if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error("Microphone recording unavailable in this browser");
-      const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
-      mediaStreamRef.current=stream;
-      const mime = ["audio/webm;codecs=opus","audio/webm","audio/mp4"].find(t=>MediaRecorder.isTypeSupported(t)) || "";
-      const recorder = new MediaRecorder(stream,mime ? {mimeType:mime} : {});
-      mediaRecorderRef.current=recorder;
-      const chunks=[];
-      recorder.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
-      recorder.onstop=async()=>{
-        stream.getTracks().forEach(t=>t.stop());
-        mediaStreamRef.current=null;
-        const extension=recorder.mimeType.includes("mp4") ? "m4a" : "webm";
-        const blob=new Blob(chunks,{type:recorder.mimeType || "audio/webm"});
-        if(blob.size) await handleFilesUpload([new File([blob],`Voice_${Date.now()}.${extension}`,{type:blob.type})]);
-        else addToast("Recording was empty", "⚠️");
-      };
-      recorder.start(500);
-      setIsRecording(true);
-      addToast("Recording started. Click Stop recording when finished", "🎤");
-    } catch(err) { setIsRecording(false); addToast(`Microphone: ${err.message}`,"⚠️"); }
-  },[handleFilesUpload, addToast]);
+      if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+        throw new Error("Microphone recording unavailable in this browser")
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true
+      })
+
+      mediaStreamRef.current = stream
+
+      const mime = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4"
+      ].find(type => MediaRecorder.isTypeSupported(type)) || ""
+
+      const recorder = new MediaRecorder(
+        stream,
+        mime ? { mimeType: mime } : {}
+      )
+
+      mediaRecorderRef.current = recorder
+      const chunks = []
+
+      recorder.ondataavailable = event => {
+        if (event.data.size) chunks.push(event.data)
+      }
+
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(track => track.stop())
+        mediaStreamRef.current = null
+
+        const extension = recorder.mimeType.includes("mp4")
+          ? "m4a"
+          : "webm"
+
+        const blob = new Blob(chunks, {
+          type: recorder.mimeType || "audio/webm"
+        })
+
+        if (blob.size) {
+          await handleFilesUpload([
+            new File(
+              [blob],
+              `Voice_${Date.now()}.${extension}`,
+              { type: blob.type }
+            )
+          ])
+        } else {
+          addToast("Recording was empty", "⚠️")
+        }
+      }
+
+      recorder.start(500)
+      setIsRecording(true)
+      addToast("Recording started. Click Stop recording when finished", "🎤")
+    } catch (error) {
+      setIsRecording(false)
+      addToast(`Microphone: ${error.message}`, "⚠️")
+    }
+  }, [handleFilesUpload, addToast])
 
   const handleRemoveEvidence = useCallback(async fileName => {
-    const id=uploadedFileMap[fileName]?.id;
+    const id = uploadedFileMap[fileName]?.id
+
     if (id) {
-      try { await api(`/api/evidence/${id}`,{method:"DELETE"}); }
-      catch(err) { addToast(`Delete failed: ${err.message}`,"⚠️"); return; }
-      setUploadedFileMap(prev=>{const next={...prev};delete next[fileName];return next;});
+      try {
+        await api(`/api/evidence/${id}`, {
+          method: "DELETE"
+        })
+      } catch (error) {
+        addToast(`Delete failed: ${error.message}`, "⚠️")
+        return
+      }
+
+      setUploadedFileMap(prev => {
+        const next = { ...prev }
+        delete next[fileName]
+        return next
+      })
     }
-    setRemovedNames(prev=>new Set(prev).add(fileName));
-    setSampleNames(prev=>prev.filter(n=>n!==fileName));
-    setAssignedReportTypes(prev=>{const next={...prev};delete next[fileName];return next;});
-    setManuallyAssigned(prev=>{const next=new Set(prev);next.delete(fileName);return next;});
-    setClassificationConfirmed(false);
-    addToast(`Removed ${fileName}`,"🗑️");
-  },[uploadedFileMap,addToast]);
+
+    setRemovedNames(prev => new Set(prev).add(fileName))
+    setSampleNames(prev => prev.filter(name => name !== fileName))
+
+    setAssignedReportTypes(prev => {
+      const next = { ...prev }
+      delete next[fileName]
+      return next
+    })
+
+    setManuallyAssigned(prev => {
+      const next = new Set(prev)
+      next.delete(fileName)
+      return next
+    })
+
+    setClassificationConfirmed(false)
+    addToast(`Removed ${fileName}`, "🗑️")
+    refreshProjects().catch(() => {})
+  }, [uploadedFileMap, addToast, refreshProjects])
 
   const handleRestoreRemoved = useCallback(() => {
-    const toRestore = Object.keys(SAMPLE_EVIDENCE).filter((name) => removedNames.has(name));
-    setRemovedNames(new Set());
+    const toRestore = Object.keys(SAMPLE_EVIDENCE)
+      .filter(name => removedNames.has(name))
+
+    setRemovedNames(new Set())
+
     if (toRestore.length) {
-      setSampleNames((prev) => Array.from(new Set([...prev, ...toRestore])));
-      setAssignedReportTypes((prev) => {
-        const next = { ...prev };
-        toRestore.forEach((n) => {
-          next[n] = uploadedFileMap[n]?.id ? (assignedReportTypes[n] || [classifyEvidence(n)]) : [classifyEvidence(n)];
-        });
-        return next;
-      });
+      setSampleNames(prev =>
+        Array.from(new Set([...prev, ...toRestore]))
+      )
+
+      setAssignedReportTypes(prev => {
+        const next = { ...prev }
+
+        toRestore.forEach(name => {
+          next[name] = uploadedFileMap[name]?.id
+            ? assignedReportTypes[name] || [classifyEvidence(name)]
+            : [classifyEvidence(name)]
+        })
+
+        return next
+      })
     }
-    addToast("Restored removed evidence files", "↩️");
-  }, [removedNames, addToast]);
+
+    addToast("Restored removed evidence files", "↩️")
+  }, [
+    removedNames,
+    uploadedFileMap,
+    assignedReportTypes,
+    addToast
+  ])
 
   const handleToggleReportType = useCallback(async (fileName, targetReport) => {
-    const previous = Array.isArray(assignedReportTypes[fileName]) ? assignedReportTypes[fileName] : [];
+    const previous = Array.isArray(assignedReportTypes[fileName])
+      ? assignedReportTypes[fileName]
+      : []
+
     const updated = previous.includes(targetReport)
-      ? previous.filter((rt) => rt !== targetReport)
-      : [...previous, targetReport];
-    setAssignedReportTypes(prev => ({ ...prev, [fileName]: updated }));
-    setManuallyAssigned(prev => new Set(prev).add(fileName));
-    setClassificationConfirmed(false);
-    const id = uploadedFileMap[fileName]?.id;
-    if (!id) return; // Sample entries live only in the browser.
+      ? previous.filter(rt => rt !== targetReport)
+      : [...previous, targetReport]
+
+    setAssignedReportTypes(prev => ({
+      ...prev,
+      [fileName]: updated
+    }))
+
+    setManuallyAssigned(prev => new Set(prev).add(fileName))
+    setClassificationConfirmed(false)
+
+    const id = uploadedFileMap[fileName]?.id
+
+    if (!id) return
+
     try {
       await api(`/api/evidence/${id}/classification`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ assigned_types: updated })
-      });
-    } catch (err) {
-      setAssignedReportTypes(prev => ({ ...prev, [fileName]: previous }));
-      addToast(`Could not save classification: ${err.message}`, "⚠️");
+      })
+    } catch (error) {
+      setAssignedReportTypes(prev => ({
+        ...prev,
+        [fileName]: previous
+      }))
+
+      addToast(`Could not save classification: ${error.message}`, "⚠️")
     }
-  }, [assignedReportTypes, uploadedFileMap, addToast]);
+  }, [
+    assignedReportTypes,
+    uploadedFileMap,
+    addToast
+  ])
 
   const handleRerunClassification = useCallback(async () => {
     try {
@@ -351,300 +755,403 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ project })
-      });
-      const byId = Object.fromEntries((response.items || []).map(item => [item.id, item]));
-      const next = {};
+      })
+
+      const byId = Object.fromEntries(
+        (response.items || []).map(item => [item.id, item])
+      )
+
+      const next = {}
+
       evidenceNames.forEach(name => {
-        const id = uploadedFileMap[name]?.id;
-        next[name] = id && byId[id] ? byId[id].assigned_types : [classifyEvidence(name)];
-      });
-      setAssignedReportTypes(next);
-      setManuallyAssigned(new Set());
-      setClassificationConfirmed(false);
-      addToast(`Reclassified ${response.count} uploaded items. Review suggested report types.`, "✨");
-    } catch (err) {
-      addToast(`Classification failed: ${err.message}`, "⚠️");
+        const id = uploadedFileMap[name]?.id
+
+        next[name] = id && byId[id]
+          ? byId[id].assigned_types
+          : [classifyEvidence(name)]
+      })
+
+      setAssignedReportTypes(next)
+      setManuallyAssigned(new Set())
+      setClassificationConfirmed(false)
+
+      addToast(
+        `Reclassified ${response.count} uploaded items. Review suggested report types.`,
+        "✨"
+      )
+    } catch (error) {
+      addToast(`Classification failed: ${error.message}`, "⚠️")
     }
-  }, [project, evidenceNames, uploadedFileMap, addToast]);
+  }, [
+    project,
+    evidenceNames,
+    uploadedFileMap,
+    addToast
+  ])
 
-  const handleOpenReview = useCallback((rt) => {
-    setReviewType(rt);
-    setReviewedReportTypes((prev) => new Set(prev).add(rt));
-  }, []);
+  const handleOpenReview = useCallback(rt => {
+    setReviewType(rt)
+    setReviewedReportTypes(prev => new Set(prev).add(rt))
+  }, [])
 
-  // Draft generation
+  // Generate reports with the existing Qwen backend.
   const handleGenerateDraft = useCallback(async ({
-  kind,
-  noticeType = null,
-  noticeSummary = "",
-  attachments = null,
-  overrideReportType = null,
-  overrideClarification = null
-}) => {
-  setIsGenerating(true)
+    kind,
+    noticeType = null,
+    noticeSummary = "",
+    attachments = null,
+    overrideReportType = null,
+    overrideClarification = null
+  }) => {
+    setIsGenerating(true)
 
-  try {
-    const chosenReportType = overrideReportType || reportType || DAILY_REPORT
+    try {
+      const chosenReportType = overrideReportType || reportType || DAILY_REPORT
 
-    const selected = evidenceNames.filter(name =>
-      (assignedReportTypes[name] || []).includes(chosenReportType)
-    )
+      const selected = evidenceNames.filter(name =>
+        (assignedReportTypes[name] || []).includes(chosenReportType)
+      )
 
-    const ids = selected
-      .map(name => uploadedFileMap[name]?.id)
-      .filter(Boolean)
+      const ids = selected
+        .map(name => uploadedFileMap[name]?.id)
+        .filter(Boolean)
 
-    const lang = REPORT_LANGUAGES[reportLanguage] || "en"
-    const created = formatNowTimestamp(lang)
-    const docId = `BD-${formatIdStamp()}`
+      const lang = REPORT_LANGUAGES[reportLanguage] || "en"
+      const created = formatNowTimestamp(lang)
+      const docId = `BD-${formatIdStamp()}`
 
-    let draft
-    let docType = chosenReportType
+      let draft
+      let docType = chosenReportType
 
-    if (kind === "Notice" || kind === "Delay notice") {
-      const notes = noticeSummary.trim() || freeformNotes.trim()
+      if (kind === "Notice" || kind === "Delay notice") {
+        const notes = noticeSummary.trim() || freeformNotes.trim()
 
-      if (!notes) {
+        if (!notes) {
+          addToast("Write a factual notice summary before drafting", "⚠️")
+          return
+        }
+
+        docType = noticeType || "Delay Notice"
+
+        draft = noticeToEditorText(
+          project,
+          overrideClarification || clarification,
+          created,
+          docType,
+          notes,
+          attachments,
+          `SC-${formatIdStamp()}`
+        )
+
+        setLlmReportJson(null)
+        setLlmPrompt(null)
+      } else if (ids.length || freeformNotes.trim()) {
+        const answer = await api("/api/drafts/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            project,
+            reportType: chosenReportType,
+            evidenceIds: ids,
+            notes: freeformNotes
+          })
+        })
+
+        const ai = answer.report
+
+        const realPhotos = (
+          photosByType[chosenReportType] || []
+        ).filter(([, name]) =>
+          Boolean(uploadedFileMap[name]?.id)
+        )
+
+        let template = aiReportToTemplate(
+          ai,
+          chosenReportType,
+          realPhotos,
+          selected
+        )
+
+        if (lang === "de") {
+          template = await translateReportTemplate(template)
+        }
+
+        draft = reportToEditorText(
+          template,
+          project,
+          lang,
+          created,
+          REPORT_TYPES[chosenReportType].titles[lang],
+          docId,
+          lang === "de"
+            ? "Entwurf zur Prüfung"
+            : "Draft for Review"
+        )
+
+        setLlmReportJson(JSON.stringify(ai, null, 2))
+
+        setLlmPrompt({
+          reportType: chosenReportType,
+          language: lang,
+          warnings: answer.warnings
+        })
+
+        if (lang === "de") {
+          addToast("German report generated. Review before export.", "✅")
+        } else {
+          addToast("Draft generated from uploaded evidence", "✅")
+        }
+      } else if (sampleNames.length) {
+        const demo = simulateLlmReport(
+          lang,
+          chosenReportType,
+          overrideClarification || clarification || {
+            hours: 3,
+            supplier: "DEMO supplier",
+            impact: "Demo only"
+          },
+          photosByType[chosenReportType] || [],
+          created,
+          getUploadTime
+        )
+
+        draft = reportToEditorText(
+          parseLlmReport(demo),
+          project,
+          lang,
+          created,
+          REPORT_TYPES[chosenReportType].titles[lang],
+          docId,
+          "SAMPLE / NOT VERIFIED"
+        )
+
+        setLlmReportJson(demo)
+
+        setLlmPrompt({
+          reportType: chosenReportType,
+          language: lang,
+          demo: true
+        })
+
         addToast(
-          "Write a factual notice summary before drafting",
+          "Demo sample draft generated. Not based on uploaded evidence",
+          "⚠️"
+        )
+      } else {
+        addToast(
+          "Upload real evidence or enter notes before generating a report",
           "⚠️"
         )
         return
       }
 
-      docType = noticeType || "Delay Notice"
-
-      draft = noticeToEditorText(
-        project,
-        overrideClarification || clarification,
-        created,
-        docType,
-        notes,
-        attachments,
-        `SC-${formatIdStamp()}`
-      )
-
-      setLlmReportJson(null)
-      setLlmPrompt(null)
-
-    } else if (ids.length || freeformNotes.trim()) {
-      // Step 1: Generate structured facts with Qwen.
-      const answer = await api("/api/drafts/generate", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          project,
-          reportType: chosenReportType,
-          evidenceIds: ids,
-          notes: freeformNotes
-        })
-      })
-
-      const ai = answer.report
-
-      const realPhotos = (
-        photosByType[chosenReportType] || []
-      ).filter(([, name]) =>
-        Boolean(uploadedFileMap[name]?.id)
-      )
-
-      // Step 2: Build the report using the extracted facts.
-      let template = aiReportToTemplate(
-        ai,
-        chosenReportType,
-        realPhotos,
-        selected
-      )
-
-      // Step 3: Translate the entire report if German is selected.
-      // Uses the existing Qwen3 server.
-      if (lang === "de") {
-        template = await translateReportTemplate(template)
-      }
-
-      // Step 4: Convert the report into the editable document.
-      draft = reportToEditorText(
-        template,
-        project,
-        lang,
-        created,
-        REPORT_TYPES[chosenReportType].titles[lang],
-        docId,
-        lang === "de"
-          ? "Entwurf zur Prüfung"
-          : "Draft for Review"
-      )
-
-      setLlmReportJson(JSON.stringify(ai, null, 2))
-
-      setLlmPrompt({
-        reportType: chosenReportType,
-        language: lang,
-        warnings: answer.warnings
-      })
-
-      if (lang === "de") {
-        addToast(
-          "German report generated. Review before export.",
-          "✅"
-        )
-      } else {
-        addToast(
-          "Draft generated from uploaded evidence",
-          "✅"
-        )
-      }
-
-    } else if (sampleNames.length) {
-      const demo = simulateLlmReport(
-        lang,
-        chosenReportType,
-        overrideClarification || clarification || {
-          hours: 3,
-          supplier: "DEMO supplier",
-          impact: "Demo only"
-        },
-        photosByType[chosenReportType] || [],
-        created,
-        getUploadTime
-      )
-
-      draft = reportToEditorText(
-        parseLlmReport(demo),
-        project,
-        lang,
-        created,
-        REPORT_TYPES[chosenReportType].titles[lang],
-        docId,
-        "SAMPLE / NOT VERIFIED"
-      )
-
-      setLlmReportJson(demo)
-
-      setLlmPrompt({
-        reportType: chosenReportType,
-        language: lang,
-        demo: true
-      })
-
-      addToast(
-        "Demo sample draft generated. Not based on uploaded evidence",
-        "⚠️"
-      )
-
-    } else {
-      addToast(
-        "Upload real evidence or enter notes before generating a report",
-        "⚠️"
-      )
-      return
+      setReportType(chosenReportType)
+      setGeneratedDocument(docType)
+      setLockedTimestamp(created)
+      setLockedDocId(docId)
+      setDocumentDraft(draft)
+      setSavedDraft(null)
+      setExported(false)
+      setExportSuccessMsg(null)
+    } catch (error) {
+      addToast(`Report failed: ${error.message}`, "⚠️")
+    } finally {
+      setIsGenerating(false)
     }
-
-    // Save the generated draft in React state.
-    setReportType(chosenReportType)
-    setGeneratedDocument(docType)
-    setLockedTimestamp(created)
-    setLockedDocId(docId)
-    setDocumentDraft(draft)
-    setSavedDraft(null)
-    setExported(false)
-    setExportSuccessMsg(null)
-
-  } catch (error) {
-    addToast(
-      `Report failed: ${error.message}`,
-      "⚠️"
-    )
-  } finally {
-    setIsGenerating(false)
-  }
-}, [
-  clarification,
-  project,
-  reportType,
-  reportLanguage,
-  evidenceNames,
-  assignedReportTypes,
-  uploadedFileMap,
-  freeformNotes,
-  photosByType,
-  sampleNames,
-  getUploadTime,
-  addToast
-])
+  }, [
+    clarification,
+    project,
+    reportType,
+    reportLanguage,
+    evidenceNames,
+    assignedReportTypes,
+    uploadedFileMap,
+    freeformNotes,
+    photosByType,
+    sampleNames,
+    getUploadTime,
+    addToast
+  ])
 
   const handleSaveDraft = useCallback(() => {
-    setSavedDraft({ text: documentDraft, time: formatTimeHHMM() });
-    setExported(false);
-    addToast("Draft saved and ready for export", "💾");
-  }, [documentDraft, addToast]);
+    setSavedDraft({
+      text: documentDraft,
+      time: formatTimeHHMM()
+    })
 
-  const handleMarkExported = useCallback(async ({ fileName,docType,evidenceCount,summary,blob,mime,docId }) => {
+    setExported(false)
+    addToast("Draft saved and ready for export", "💾")
+  }, [documentDraft, addToast])
+
+  // Archive exported reports under their project.
+  const handleMarkExported = useCallback(async ({
+    fileName,
+    docType,
+    evidenceCount,
+    summary,
+    blob,
+    mime,
+    docId
+  }) => {
     try {
-      const response=await formRequest("/api/repository",{project,type:docType,evidence_count:evidenceCount,summary},new File([blob],fileName,{type:mime}));
-      const item=response.item;
-      setRepositoryDocs(prev=>[item,...prev]);
-      const msg=`Exported ${fileName} and saved in the project repository`;
-      setExported(true);
-      setExportSuccessMsg(msg);
-      addToast(msg,"✅");
-    } catch(err) { addToast(`File downloaded, but server archive failed: ${err.message}`,"⚠️"); }
-  },[project,addToast]);
+      const response = await formRequest(
+        "/api/repository",
+        {
+          project,
+          type: docType,
+          evidence_count: evidenceCount,
+          summary
+        },
+        new File([blob], fileName, { type: mime })
+      )
 
-  // Cross-tab actions operate on real uploaded evidence and confirmed schedule data.
-  const handlePmCreateDelayNotice = useCallback((activity,rootCause,delayDays) => {
-    const summaryText=`Activity: ${activity}. Reported schedule difference: ${delayDays || "unconfirmed"} days. Root cause: ${rootCause || "not confirmed"}.`;
-    setNoticeTypeChoice("Delay Notice");
-    setNoticeSummaryInput(summaryText);
-    handleGenerateDraft({kind:"Notice",noticeType:"Delay Notice",noticeSummary:summaryText,attachments:evidenceNames});
-    setPmActionFeedback("Draft notice created from the selected schedule row. Verify source documents before sending.");
-    addToast(`Notice draft created for ${activity}`,"⚠️");
-  },[handleGenerateDraft,evidenceNames,addToast]);
+      const item = response.item
+
+      if (projectRef.current === project) {
+        setRepositoryDocs(prev => [item, ...prev])
+      }
+
+      refreshProjects().catch(() => {})
+
+      const msg = `Exported ${fileName} and saved in the project repository`
+
+      if (projectRef.current === project) {
+        setExported(true)
+        setExportSuccessMsg(msg)
+      }
+
+      addToast(msg, "✅")
+    } catch (error) {
+      addToast(
+        `File downloaded, but server archive failed: ${error.message}`,
+        "⚠️"
+      )
+    }
+  }, [project, addToast, refreshProjects])
+
+  // Performance Monitoring actions
+  const handlePmCreateDelayNotice = useCallback((
+    activity,
+    rootCause,
+    delayDays
+  ) => {
+    const summaryText = `Activity: ${activity}. Reported schedule difference: ${delayDays || "unconfirmed"} days. Root cause: ${rootCause || "not confirmed"}.`
+
+    setNoticeTypeChoice("Delay Notice")
+    setNoticeSummaryInput(summaryText)
+
+    handleGenerateDraft({
+      kind: "Notice",
+      noticeType: "Delay Notice",
+      noticeSummary: summaryText,
+      attachments: evidenceNames
+    })
+
+    setPmActionFeedback(
+      "Draft notice created from the selected schedule row. Verify source documents before sending."
+    )
+
+    addToast(`Notice draft created for ${activity}`, "⚠️")
+  }, [handleGenerateDraft, evidenceNames, addToast])
 
   const handlePmGenerateReport = useCallback(() => {
-    setReportType(DAILY_REPORT);
-    setActiveTab("workflow");
-    setPmActionFeedback("Review and select your actual evidence, then generate a daily report draft in Step 3.");
-    addToast("Open Daily Documentation to generate the report from uploaded evidence","📋");
-  },[addToast]);
+    setReportType(DAILY_REPORT)
+    setActiveTab("workflow")
+
+    setPmActionFeedback(
+      "Review and select your actual evidence, then generate a daily report draft in Step 3."
+    )
+
+    addToast(
+      "Open Daily Documentation to generate the report from uploaded evidence",
+      "📋"
+    )
+  }, [addToast])
 
   const handlePmReviewEvidence = useCallback(() => {
-    handleOpenReview(DAILY_REPORT);
-    setActiveTab("workflow");
-    setPmActionFeedback("Opened evidence review. Only real uploaded evidence is used for live drafts.");
-  },[handleOpenReview]);
+    handleOpenReview(DAILY_REPORT)
+    setActiveTab("workflow")
 
-  // Knowledge Hub & Assistant helpers
-  const savedDocLabel = generatedDocument && savedDraft ? `${generatedDocument} draft` : null;
+    setPmActionFeedback(
+      "Opened evidence review. Only real uploaded evidence is used for live drafts."
+    )
+  }, [handleOpenReview])
 
-  const answerQuestionFn = useCallback(async q => {
-    const response=await api("/api/knowledge/search",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({project,question:q})});
-    return response.result;
-  },[project]);
+  // Project-specific Knowledge Hub search.
+  const answerQuestionFn = useCallback(async question => {
+    const response = await api("/api/knowledge/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project, question })
+    })
 
-  const recordSearch = useCallback(q => {
-    setRecentSearches(prev=>[q,...prev.filter(item=>item!==q)].slice(0,6));
-  },[]);
+    return response.result
+  }, [project])
 
-  const handleAssistantAsk = useCallback(async q => {
-    recordSearch(q);
-    setKbMessages(prev=>[...prev,{role:"user",content:q}]);
-    try { const reply=await answerQuestionFn(q); setKbMessages(prev=>[...prev,reply]); }
-    catch(err) { setKbMessages(prev=>[...prev,{role:"assistant",answer:`Search failed: ${err.message}`,documents:[],confidence:0}]); }
-  },[recordSearch,answerQuestionFn]);
+  const recordSearch = useCallback(question => {
+    setRecentSearches(prev => [
+      question,
+      ...prev.filter(item => item !== question)
+    ].slice(0, 6))
+  }, [])
 
-  const handleDeleteRepoDoc = useCallback(async (id,name) => {
-    try { await api(`/api/repository/${id}`,{method:"DELETE"}); setRepositoryDocs(prev=>prev.filter(d=>d.id!==id)); addToast(`Deleted ${name}`,"🗑️"); }
-    catch(err) { addToast(`Delete failed: ${err.message}`,"⚠️"); }
-  },[addToast]);
+  const handleAssistantAsk = useCallback(async question => {
+    recordSearch(question)
+
+    setKbMessages(prev => [
+      ...prev,
+      { role: "user", content: question }
+    ])
+
+    const requestedProject = project
+
+    try {
+      const reply = await answerQuestionFn(question)
+
+      // Ignore answers belonging to a previously selected project.
+      if (projectRef.current === requestedProject) {
+        setKbMessages(prev => [...prev, reply])
+      }
+    } catch (error) {
+      if (projectRef.current === requestedProject) {
+        setKbMessages(prev => [
+          ...prev,
+          {
+            role: "assistant",
+            answer: `Search failed: ${error.message}`,
+            documents: [],
+            confidence: 0
+          }
+        ])
+      }
+    }
+  }, [recordSearch, answerQuestionFn, project])
+
+  const handleDeleteRepoDoc = useCallback(async (id, name) => {
+    try {
+      await api(`/api/repository/${id}`, {
+        method: "DELETE"
+      })
+
+      setRepositoryDocs(prev =>
+        prev.filter(doc => doc.id !== id)
+      )
+
+      refreshProjects().catch(() => {})
+      addToast(`Deleted ${name}`, "🗑️")
+    } catch (error) {
+      addToast(`Delete failed: ${error.message}`, "⚠️")
+    }
+  }, [addToast, refreshProjects])
 
   return (
     <div className="app-shell">
       <Sidebar
         project={project}
-        onProjectChange={setProject}
+        projects={projects}
+        projectsLoading={projectsLoading}
+        onProjectChange={handleProjectChange}
+        onCreateProject={handleCreateProject}
         tabs={TABS}
         activeTab={activeTab}
         onTabChange={setActiveTab}
@@ -652,7 +1159,10 @@ export default function App() {
 
       <main className="main-content">
         <header className="site-hero">
-          <div className="site-eyebrow">{project} · LIVE WORKSPACE</div>
+          <div className="site-eyebrow">
+            {project} · LIVE WORKSPACE
+          </div>
+
           <h1>
             {activeTab === "knowledge"
               ? "Knowledge Hub"
@@ -663,8 +1173,15 @@ export default function App() {
         </header>
 
         {pmActionFeedback && (
-          <div className="alert alert-info" style={{ marginBottom: 14, justifyContent: "space-between" }}>
+          <div
+            className="alert alert-info"
+            style={{
+              marginBottom: 14,
+              justifyContent: "space-between"
+            }}
+          >
             <span>⚡ {pmActionFeedback}</span>
+
             <button
               className="btn btn-ghost btn-sm"
               onClick={() => setPmActionFeedback(null)}
@@ -676,6 +1193,7 @@ export default function App() {
 
         {activeTab === "workflow" && (
           <DailyDocumentationTab
+            key={project}
             project={project}
             evidenceRecords={evidenceRecords}
             evidenceNames={evidenceNames}
@@ -724,6 +1242,7 @@ export default function App() {
 
         {activeTab === "knowledge" && (
           <KnowledgeHubTab
+            key={project}
             project={project}
             repositoryDocs={repositoryDocs}
             answerQuestionFn={answerQuestionFn}
@@ -735,6 +1254,7 @@ export default function App() {
 
         {activeTab === "performance" && (
           <PerformanceMonitoringTab
+            key={project}
             project={project}
             onCreateDelayNotice={handlePmCreateDelayNotice}
             onGenerateReport={handlePmGenerateReport}
@@ -744,6 +1264,7 @@ export default function App() {
 
         {activeTab === "meetings" && (
           <MeetingIntelligenceTab
+            key={project}
             project={project}
             repositoryDocs={repositoryDocs}
             evidenceCount={evidenceNames.length}
@@ -753,6 +1274,7 @@ export default function App() {
       </main>
 
       <ProjectAssistantDrawer
+        key={project}
         isOpen={assistantOpen}
         onOpen={() => setAssistantOpen(true)}
         onClose={() => setAssistantOpen(false)}
@@ -776,5 +1298,5 @@ export default function App() {
 
       <ToastContainer toasts={toasts} />
     </div>
-  );
+  )
 }

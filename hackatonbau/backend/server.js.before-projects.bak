@@ -1,0 +1,1890 @@
+import { installKnowledgeSearch } from "./knowledgeSearch.js"
+import express from "express"
+import cors from "cors"
+import multer from "multer"
+import path from "node:path"
+import fs from "node:fs/promises"
+import { fileURLToPath } from "node:url"
+import { randomUUID } from "node:crypto"
+import { spawn } from "node:child_process"
+import { REPORT_TYPES } from "./classifier.js"
+import { registerReportTranslation } from "./reportTranslation.js"
+
+const app = express()
+const ROOT = path.dirname(fileURLToPath(import.meta.url))
+const REPO_ROOT = path.resolve(ROOT, "..")
+const DATA = path.join(ROOT, "data")
+const FILES = path.join(DATA, "evidence")
+const DOCS = path.join(DATA, "documents")
+const DATABASE = path.join(DATA, "records.json")
+const PORT = Number(process.env.PORT || 3000)
+const WHISPER_URL = process.env.WHISPER_URL || "http://127.0.0.1:8001"
+const QWEN_URL = process.env.QWEN_URL || "http://127.0.0.1:8002"
+const PYTHON = process.env.AI_PYTHON ||
+  path.join(REPO_ROOT, "hackaton", "bin", "python")
+const LIMIT = 25 * 1024 * 1024
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: LIMIT, files: 8 }
+})
+
+const extensions = new Set([
+  ".jpg", ".jpeg", ".png", ".webp",
+  ".pdf", ".docx", ".msg", ".eml",
+  ".txt", ".md", ".csv", ".json",
+  ".mp3", ".wav", ".webm", ".ogg",
+  ".m4a", ".mp4", ".flac"
+])
+
+const audioExt = new Set([
+  ".mp3", ".wav", ".webm", ".ogg",
+  ".m4a", ".mp4", ".flac"
+])
+
+const imageExt = new Set([
+  ".jpg", ".jpeg", ".png", ".webp"
+])
+
+const textExt = new Set([
+  ".txt", ".md", ".csv", ".json", ".eml"
+])
+
+const projectName = value =>
+  String(value || "Office Tower Munich").slice(0, 120)
+
+const publicFile = x => ({
+  id: x.id,
+  name: x.name,
+  project: x.project,
+  category: x.category,
+  mime: x.mime,
+  size: x.size,
+  uploaded_at: x.uploaded_at,
+  extracted_text: x.extracted_text,
+  transcription: x.transcription,
+  warnings: x.warnings,
+  assigned_types: x.assigned_types,
+  classification: x.classification || null,
+  classification_manual: Boolean(x.classification_manual),
+  summary: x.summary,
+  url: `/api/evidence/${x.id}/file`
+})
+
+const publicDoc = x => ({
+  ...x,
+  extracted_text: undefined,
+  blob: undefined,
+  diskName: undefined,
+  url: `/api/repository/${x.id}/file`
+})
+
+let db = {
+  evidence: [],
+  documents: [],
+  schedule: []
+}
+
+let pendingWrite = Promise.resolve()
+
+async function setup() {
+  await Promise.all(
+    [DATA, FILES, DOCS].map(p =>
+      fs.mkdir(p, { recursive: true })
+    )
+  )
+
+  try {
+    const saved = JSON.parse(
+      await fs.readFile(DATABASE, "utf8")
+    )
+
+    db = {
+      evidence: Array.isArray(saved.evidence)
+        ? saved.evidence
+        : [],
+      documents: Array.isArray(saved.documents)
+        ? saved.documents
+        : [],
+      schedule: Array.isArray(saved.schedule)
+        ? saved.schedule
+        : []
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.warn(
+        "Storage reset after unreadable database:",
+        error.message
+      )
+    }
+  }
+}
+
+function persist() {
+  pendingWrite = pendingWrite
+    .catch(() => {})
+    .then(async () => {
+      const tmp = `${DATABASE}.tmp`
+      await fs.writeFile(
+        tmp,
+        JSON.stringify(db, null, 2)
+      )
+      await fs.rename(tmp, DATABASE)
+    })
+
+  return pendingWrite
+}
+
+function category(ext) {
+  if (audioExt.has(ext)) return "voice"
+  if (imageExt.has(ext)) return "photo"
+  if (textExt.has(ext)) return "text"
+  if (ext === ".docx") return "word"
+  if ([".msg", ".eml"].includes(ext)) return "email"
+  return "pdf"
+}
+
+async function aiRequest(url, body, headers, timeout = 240000) {
+  let response
+
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers,
+      body,
+      signal: AbortSignal.timeout(timeout)
+    })
+  } catch (error) {
+    throw new Error(
+      `AI service unavailable at ${url}: ${error.message}`
+    )
+  }
+
+  let data
+
+  try {
+    data = await response.json()
+  } catch {
+    throw new Error(
+      `AI service returned invalid JSON (${response.status})`
+    )
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      data.error ||
+      `AI service failed with status ${response.status}`
+    )
+  }
+
+  return data
+}
+
+async function whisperFile(file) {
+  const ext = path.extname(
+    file.originalname || file.name || ""
+  ).toLowerCase()
+
+  if (!audioExt.has(ext)) {
+    throw new Error("Unsupported audio format")
+  }
+
+  return aiRequest(
+    `${WHISPER_URL}/transcribe`,
+    file.buffer,
+    {
+      "Content-Type": "application/octet-stream",
+      "X-Audio-Extension": ext
+    }
+  )
+}
+
+async function qwenText(
+  text,
+  photo = null,
+  mime = "image/jpeg"
+) {
+  const payload = { text: text || "" }
+
+  if (photo) {
+    if (photo.length > 7 * 1024 * 1024) {
+      throw new Error("Image exceeds 7MB AI limit")
+    }
+
+    payload.image_base64 = photo.toString("base64")
+    payload.image_mime = mime
+  }
+
+  const data = await aiRequest(
+    `${QWEN_URL}/generate`,
+    JSON.stringify(payload),
+    { "Content-Type": "application/json" },
+    300000
+  )
+
+  return data.report
+}
+
+async function extractPath(filePath) {
+  return new Promise(resolve => {
+    const child = spawn(
+      PYTHON,
+      [
+        path.join(REPO_ROOT, "ai", "extract_document.py"),
+        filePath
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] }
+    )
+
+    let out = ""
+    let err = ""
+    let ended = false
+
+    child.stdout.on("data", data => {
+      if (out.length < 100001) {
+        out += data.toString().slice(
+          0,
+          100001 - out.length
+        )
+      }
+    })
+
+    child.stderr.on("data", data => {
+      if (err.length < 1000) {
+        err += data.toString().slice(
+          0,
+          1000 - err.length
+        )
+      }
+    })
+
+    child.on("error", error => {
+      ended = true
+
+      resolve({
+        text: "",
+        warning:
+          `Document extraction unavailable: ${error.message}`
+      })
+    })
+
+    child.on("close", code => {
+      if (ended) return
+
+      if (code !== 0) {
+        return resolve({
+          text: "",
+          warning:
+            `Document extraction failed: ${err.slice(0, 180)}`
+        })
+      }
+
+      resolve({
+        text: out.slice(0, 100000),
+        warning: out.trim()
+          ? null
+          : "No selectable text found; scanned documents need OCR"
+      })
+    })
+  })
+}
+
+async function extractDocument(file, ext) {
+  if (textExt.has(ext)) {
+    return {
+      text: file.buffer
+        .toString("utf8")
+        .slice(0, 100000),
+      warning: null
+    }
+  }
+
+  if (![".pdf", ".docx", ".msg"].includes(ext)) {
+    return {
+      text: "",
+      warning: null
+    }
+  }
+
+  return extractPath(
+    path.join(FILES, file.diskName)
+  )
+}
+
+async function qwenClassify(
+  text,
+  photo = null,
+  mime = "image/jpeg"
+) {
+  if (!String(text || "").trim() && !photo) {
+    return {
+      types: [],
+      scores: {},
+      reasons: {},
+      method: "no readable evidence",
+      needs_review: true
+    }
+  }
+
+  const payload = {
+    text: String(text || "").slice(0, 11000)
+  }
+
+  if (photo) {
+    if (photo.length > 7 * 1024 * 1024) {
+      throw new Error("Image exceeds 7MB AI limit")
+    }
+
+    payload.image_base64 = photo.toString("base64")
+    payload.image_mime = mime
+  }
+
+  const data = await aiRequest(
+    `${QWEN_URL}/classify`,
+    JSON.stringify(payload),
+    { "Content-Type": "application/json" },
+    300000
+  )
+
+  const result = data.classification
+
+  if (!result || result.method === "qwen3-vl failed") {
+    throw new Error(
+      result?.warning ||
+      "Semantic classification unavailable"
+    )
+  }
+
+  const types = (
+    Array.isArray(result.types)
+      ? result.types
+      : []
+  ).filter(type => REPORT_TYPES.includes(type))
+
+  return {
+    types: [...new Set(types)],
+    scores: {},
+    reasons: result.reasons || {},
+    method: "qwen3-vl semantic",
+    needs_review: Boolean(result.needs_review)
+  }
+}
+
+async function classifyItem(item, photo = null) {
+  try {
+    return await qwenClassify(
+      item.extracted_text,
+      photo,
+      item.mime
+    )
+  } catch (error) {
+    item.warnings.push(
+      `AI classification unavailable: ${error.message}`
+    )
+    return null
+  }
+}
+
+function projectRecords(project, collection) {
+  return collection
+    .filter(x => x.project === project)
+    .sort((a, b) =>
+      String(b.created_at || b.uploaded_at)
+        .localeCompare(
+          String(a.created_at || a.uploaded_at)
+        )
+    )
+}
+
+app.use(cors({
+  origin: process.env.CORS_ORIGIN?.split(",") || [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173"
+  ]
+}))
+
+app.use(express.json({ limit: "12mb" }))
+
+// GERMAN REPORT TRANSLATION
+registerReportTranslation(app, QWEN_URL)
+
+// HEALTH
+app.get("/api/health", async (req, res) => {
+  const services = {}
+
+  await Promise.all(
+    [
+      ["whisper", WHISPER_URL],
+      ["qwen", QWEN_URL]
+    ].map(async ([name, url]) => {
+      try {
+        const response = await fetch(
+          `${url}/health`,
+          {
+            signal: AbortSignal.timeout(1500)
+          }
+        )
+
+        services[name] = response.ok
+          ? "ready"
+          : "error"
+      } catch {
+        services[name] = "offline"
+      }
+    })
+  )
+
+  res.json({
+    status: "running",
+    services
+  })
+})
+
+// TRANSCRIBE
+app.post(
+  "/api/transcribe",
+  upload.single("audio"),
+  async (req, res, next) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          error: "Audio required"
+        })
+      }
+
+      res.json({
+        success: true,
+        transcription: await whisperFile(req.file)
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// TEXT REPORT
+app.post("/api/report/text", async (req, res, next) => {
+  try {
+    const text = req.body?.text
+
+    if (
+      typeof text !== "string" ||
+      !text.trim()
+    ) {
+      return res.status(400).json({
+        error: "Text required"
+      })
+    }
+
+    res.json({
+      success: true,
+      report: await qwenText(text)
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+// VOICE REPORT
+app.post(
+  "/api/report",
+  upload.single("audio"),
+  async (req, res, next) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          error: "Audio required"
+        })
+      }
+
+      const transcription = await whisperFile(req.file)
+
+      if (!transcription.text?.trim()) {
+        return res.status(422).json({
+          error: "No speech detected"
+        })
+      }
+
+      const report = await qwenText(
+        transcription.text
+      )
+
+      res.json({
+        success: true,
+        transcription,
+        report
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// EVIDENCE RETRIEVAL
+app.get("/api/evidence", (req, res) => {
+  res.json({
+    items: projectRecords(
+      projectName(req.query.project),
+      db.evidence
+    ).map(publicFile)
+  })
+})
+
+// EVIDENCE UPLOAD
+app.post(
+  "/api/evidence",
+  upload.single("file"),
+  async (req, res, next) => {
+    if (!req.file) {
+      return res.status(400).json({
+        error: "File required"
+      })
+    }
+
+    const ext = path.extname(
+      req.file.originalname
+    ).toLowerCase()
+
+    if (!extensions.has(ext)) {
+      return res.status(415).json({
+        error: `Unsupported extension ${ext}`
+      })
+    }
+
+    const id = randomUUID()
+    const diskName = id + ext
+    const project = projectName(req.body.project)
+
+    const item = {
+      id,
+      diskName,
+      name: path.basename(req.file.originalname),
+      project,
+      mime: req.file.mimetype,
+      size: req.file.size,
+      category: category(ext),
+      uploaded_at: new Date().toISOString(),
+      extracted_text: "",
+      transcription: null,
+      warnings: [],
+      assigned_types: [],
+      classification: null,
+      classification_manual: false,
+      summary: ""
+    }
+
+    try {
+      await fs.writeFile(
+        path.join(FILES, diskName),
+        req.file.buffer
+      )
+
+      if (audioExt.has(ext)) {
+        try {
+          item.transcription = await whisperFile(
+            req.file
+          )
+
+          item.extracted_text =
+            item.transcription.text || ""
+        } catch (error) {
+          item.warnings.push(
+            `Whisper failed: ${error.message}. ` +
+            "Retry processing later."
+          )
+        }
+      } else if (imageExt.has(ext)) {
+        try {
+          const vision = await qwenText(
+            "Describe only directly visible construction-site details in this image.",
+            req.file.buffer,
+            item.mime
+          )
+
+          item.extracted_text = (
+            Array.isArray(vision.image_observations)
+              ? vision.image_observations
+              : []
+          ).join("\n")
+        } catch (error) {
+          item.warnings.push(
+            `Photo observations unavailable: ${error.message}`
+          )
+        }
+      } else {
+        const extracted = await extractDocument(
+          item,
+          ext
+        )
+
+        item.extracted_text = extracted.text
+
+        if (extracted.warning) {
+          item.warnings.push(
+            extracted.warning
+          )
+        }
+      }
+
+      item.classification = await classifyItem(
+        item,
+        imageExt.has(ext)
+          ? req.file.buffer
+          : null
+      ) || {
+        types: [],
+        scores: {},
+        reasons: {},
+        method: "AI unavailable",
+        needs_review: true
+      }
+
+      item.assigned_types = item.classification.types
+
+      item.summary = item.extracted_text
+        ? item.extracted_text
+            .replace(/\s+/g, " ")
+            .slice(0, 240)
+        : imageExt.has(ext)
+          ? "Photo uploaded; visual analysis unavailable"
+          : `Uploaded ${item.category} file; no text extracted`
+
+      db.evidence.push(item)
+      await persist()
+
+      res.status(201).json({
+        item: publicFile(item)
+      })
+    } catch (error) {
+      await fs.rm(
+        path.join(FILES, diskName),
+        { force: true }
+      ).catch(() => {})
+
+      next(error)
+    }
+  }
+)
+
+// RECLASSIFY
+app.post(
+  "/api/evidence/reclassify",
+  async (req, res, next) => {
+    try {
+      const project = projectName(
+        req.body?.project
+      )
+
+      const selected = db.evidence.filter(
+        item => item.project === project
+      )
+
+      for (const item of selected) {
+        const photo = item.category === "photo"
+          ? await fs.readFile(
+              path.join(FILES, item.diskName)
+            )
+          : null
+
+        const proposal = await classifyItem(
+          item,
+          photo
+        )
+
+        if (proposal) {
+          item.classification = proposal
+          item.assigned_types = proposal.types
+          item.classification_manual = false
+        }
+      }
+
+      await persist()
+
+      res.json({
+        success: true,
+        items: selected.map(publicFile),
+        count: selected.length
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// MANUAL CLASSIFICATION
+app.put(
+  "/api/evidence/:id/classification",
+  async (req, res, next) => {
+    try {
+      const item = db.evidence.find(
+        x => x.id === req.params.id
+      )
+
+      if (!item) {
+        return res.status(404).json({
+          error: "Evidence not found"
+        })
+      }
+
+      const types = req.body?.assigned_types
+
+      if (
+        !Array.isArray(types) ||
+        types.some(
+          type => !REPORT_TYPES.includes(type)
+        )
+      ) {
+        return res.status(400).json({
+          error: "Invalid report types"
+        })
+      }
+
+      item.assigned_types = [...new Set(types)]
+      item.classification_manual = true
+
+      await persist()
+
+      res.json({
+        success: true,
+        item: publicFile(item)
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// DELETE EVIDENCE
+app.delete(
+  "/api/evidence/:id",
+  async (req, res, next) => {
+    try {
+      const index = db.evidence.findIndex(
+        x => x.id === req.params.id
+      )
+
+      if (index < 0) {
+        return res.status(404).json({
+          error: "Not found"
+        })
+      }
+
+      const [item] = db.evidence.splice(
+        index,
+        1
+      )
+
+      await persist()
+
+      await fs.rm(
+        path.join(FILES, item.diskName),
+        { force: true }
+      )
+
+      res.json({
+        success: true
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// EVIDENCE FILE
+app.get(
+  "/api/evidence/:id/file",
+  async (req, res, next) => {
+    try {
+      const item = db.evidence.find(
+        x => x.id === req.params.id
+      )
+
+      if (!item) {
+        return res.sendStatus(404)
+      }
+
+      res.type(
+        item.mime || "application/octet-stream"
+      )
+
+      res.sendFile(
+        path.join(FILES, item.diskName)
+      )
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// REPORT GENERATION
+app.post(
+  "/api/drafts/generate",
+  async (req, res, next) => {
+    try {
+      const {
+        project: projectInput,
+        evidenceIds,
+        reportType,
+        notes = ""
+      } = req.body || {}
+
+      const project = projectName(projectInput)
+
+      const ids = Array.isArray(evidenceIds)
+        ? evidenceIds.slice(0, 30)
+        : []
+
+      const selected = db.evidence.filter(
+        x =>
+          x.project === project &&
+          ids.includes(x.id)
+      )
+
+      if (
+        selected.length === 0 &&
+        !String(notes).trim()
+      ) {
+        return res.status(400).json({
+          error:
+            "Upload evidence or enter notes before generating"
+        })
+      }
+
+      const warnings = selected.flatMap(
+        x => x.warnings.map(
+          warning =>
+            `${x.name}: ${warning}`
+        )
+      )
+
+      const sourceTexts = selected
+        .filter(
+          x => x.extracted_text?.trim()
+        )
+        .map(
+          x =>
+            `[${x.name}]\n` +
+            x.extracted_text.slice(0, 3500)
+        )
+
+      if (String(notes).trim()) {
+        sourceTexts.push(
+          "[Site manager notes]\n" +
+          String(notes).slice(0, 7000)
+        )
+      }
+
+      const text = sourceTexts
+        .join("\n\n")
+        .slice(0, 16000)
+
+      let report = null
+
+      const photos = selected.filter(
+        x => x.category === "photo"
+      )
+
+      try {
+        if (text.trim()) {
+          report = await qwenText(text)
+        }
+      } catch (error) {
+        warnings.push(
+          `Text analysis failed: ${error.message}`
+        )
+      }
+
+      const observations = []
+
+      for (const photo of photos.slice(0, 3)) {
+        try {
+          const buffer = await fs.readFile(
+            path.join(
+              FILES,
+              photo.diskName
+            )
+          )
+
+          const vision = await qwenText(
+            `Describe visible construction facts in ${photo.name}.`,
+            buffer,
+            photo.mime
+          )
+
+          observations.push(
+            ...(vision.image_observations || [])
+              .map(
+                observation =>
+                  `${photo.name}: ${observation}`
+              )
+          )
+
+          if (!vision.image_observations?.length) {
+            warnings.push(
+              `${photo.name}: no reliable image observations extracted`
+            )
+          }
+        } catch (error) {
+          warnings.push(
+            `${photo.name}: visual analysis failed: ${error.message}`
+          )
+        }
+      }
+
+      if (photos.length > 3) {
+        warnings.push(
+          `Only the first 3 of ${photos.length} photos were analyzed`
+        )
+      }
+
+      if (!report) {
+        report = {
+          project: null,
+          report_date: null,
+          location: null,
+          completed_work: [],
+          workers_present: null,
+          issues: [],
+          image_observations: [],
+          missing_information: [],
+          section_details: {},
+          verification_warnings: []
+        }
+      }
+
+      report.image_observations = [
+        ...new Set([
+          ...(report.image_observations || []),
+          ...observations
+        ])
+      ]
+
+      report.verification_warnings = [
+        ...new Set([
+          ...(report.verification_warnings || []),
+          ...warnings
+        ])
+      ]
+
+      if (report.project) {
+        const clean = value =>
+          String(value)
+            .toLowerCase()
+            .replace(
+              /\b(?:construction|site|project|building|complex)\b/g,
+              " "
+            )
+            .replace(/\s+/g, " ")
+            .trim()
+
+        if (
+          clean(report.project) !== clean(project)
+        ) {
+          return res.status(409).json({
+            error:
+              `Evidence describes "${report.project}" but the ` +
+              `workspace is "${project}". ` +
+              "Select evidence from one site and workday."
+          })
+        }
+      }
+
+      for (const [field, label] of [
+        ["project", "Project name"],
+        ["report_date", "Report date"],
+        ["location", "Location"]
+      ]) {
+        if (
+          [
+            "",
+            "[null]",
+            "null",
+            "today",
+            "construction site"
+          ].includes(
+            String(
+              report[field] || ""
+            ).toLowerCase()
+          )
+        ) {
+          report[field] = null
+        }
+
+        if (
+          report[field] === null &&
+          !(report.missing_information || [])
+            .includes(label)
+        ) {
+          report.missing_information = [
+            ...(report.missing_information || []),
+            label
+          ]
+        }
+      }
+
+      if (
+        !sourceTexts.length &&
+        !observations.length
+      ) {
+        report.verification_warnings.push(
+          "No readable evidence; manual review required"
+        )
+      }
+
+      res.json({
+        success: true,
+        report,
+        used_evidence: selected.map(
+          x => x.id
+        ),
+        reportType:
+          reportType ||
+          "Daily Construction Report",
+        extracted_text: text.slice(0, 12000),
+        warnings:
+          report.verification_warnings
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// DOCUMENT REPOSITORY
+app.get("/api/repository", (req, res) => {
+  res.json({
+    items: projectRecords(
+      projectName(req.query.project),
+      db.documents
+    ).map(publicDoc)
+  })
+})
+
+// SAVE EXPORTED DOCUMENT
+app.post(
+  "/api/repository",
+  upload.single("file"),
+  async (req, res, next) => {
+    if (!req.file) {
+      return res.status(400).json({
+        error: "Document file required"
+      })
+    }
+
+    const ext = path.extname(
+      req.file.originalname
+    ).toLowerCase()
+
+    if (![".pdf", ".docx"].includes(ext)) {
+      return res.status(415).json({
+        error:
+          "Only PDF and DOCX exports allowed"
+      })
+    }
+
+    const item = {
+      id: randomUUID(),
+      name: path.basename(
+        req.file.originalname
+      ),
+      diskName: "",
+      project: projectName(
+        req.body.project
+      ),
+      type: String(
+        req.body.type || "Report"
+      ).slice(0, 80),
+      created_at:
+        new Date().toISOString(),
+      date_label:
+        new Date().toLocaleString("en-GB"),
+      status: "Exported",
+      evidence_count:
+        Number(
+          req.body.evidence_count || 0
+        ),
+      summary: String(
+        req.body.summary || ""
+      ).slice(0, 6000),
+      mime: req.file.mimetype
+    }
+
+    item.diskName = item.id + ext
+
+    try {
+      await fs.writeFile(
+        path.join(
+          DOCS,
+          item.diskName
+        ),
+        req.file.buffer
+      )
+
+      const extracted = await extractPath(
+        path.join(
+          DOCS,
+          item.diskName
+        )
+      )
+
+      item.extracted_text = extracted.text
+      item.extraction_warning = extracted.warning
+
+      db.documents.push(item)
+      await persist()
+
+      res.status(201).json({
+        item: publicDoc(item)
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// DOWNLOAD REPOSITORY DOCUMENT
+app.get(
+  "/api/repository/:id/file",
+  async (req, res, next) => {
+    try {
+      const item = db.documents.find(
+        x => x.id === req.params.id
+      )
+
+      if (!item) {
+        return res.sendStatus(404)
+      }
+
+      res.download(
+        path.join(DOCS, item.diskName),
+        item.name
+      )
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// DELETE REPOSITORY DOCUMENT
+app.delete(
+  "/api/repository/:id",
+  async (req, res, next) => {
+    try {
+      const index = db.documents.findIndex(
+        x => x.id === req.params.id
+      )
+
+      if (index < 0) {
+        return res.status(404).json({
+          error: "Not found"
+        })
+      }
+
+      const [item] = db.documents.splice(
+        index,
+        1
+      )
+
+      await persist()
+
+      await fs.rm(
+        path.join(
+          DOCS,
+          item.diskName
+        ),
+        { force: true }
+      )
+
+      res.json({
+        success: true
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+installKnowledgeSearch(app, {
+  getDb: () => db,
+  persist,
+  extractPath,
+  filesDir: FILES,
+  docsDir: DOCS,
+  qwenUrl: QWEN_URL,
+  projectName
+})
+
+// KNOWLEDGE HUB: INDEXING AND RETRIEVAL
+const RETRIEVAL_CONTEXT_LIMIT = 15000
+const RETRIEVAL_CHUNK_SIZE = 3000
+const RETRIEVAL_CHUNKS = 12
+const reindexAttempted = new Set()
+
+function cleanWords(value) {
+  return String(value || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()
+}
+
+function detectDeclaredProject(text) {
+  const beginning = String(text || "").slice(0, 1400)
+  const printed = beginning.match(/(?:^|\n)\s*Project\s*:\s*([^\n·|]{4,110})/im)
+  if (printed) return printed[1].replace(/\s+$/, "").trim()
+
+  const spoken = beginning.match(
+    /(?:working at|working on|at)\s+(?:the\s+)?(.{4,75}?)\s+construction\s+site\s+in\s+([A-Za-zÀ-ÿ-]+)/i
+  )
+  if (spoken) return `${spoken[1].trim()} ${spoken[2]}`
+  return ""
+}
+
+function matchesProject(declared, workspace) {
+  if (!declared) return true
+  const a = cleanWords(declared)
+  const b = cleanWords(workspace)
+  return a === b || a.includes(b) || b.includes(a)
+}
+
+async function indexProject(project, force = false) {
+  const status = {
+    indexed: 0,
+    skipped: 0,
+    failed: [],
+    unreadable: []
+  }
+
+  const items = [
+    ...db.evidence
+      .filter(item => item.project === project)
+      .map(item => ({ item, folder: FILES, prefix: "e" })),
+    ...db.documents
+      .filter(item => item.project === project)
+      .map(item => ({ item, folder: DOCS, prefix: "d" }))
+  ]
+
+  let changed = false
+
+  for (const { item, folder, prefix } of items) {
+    const key = `${prefix}:${item.id}`
+
+    if (String(item.extracted_text || "").trim()) {
+      status.skipped++
+      continue
+    }
+
+    if (!item.diskName || (!force && reindexAttempted.has(key))) {
+      status.skipped++
+      continue
+    }
+
+    const ext = path.extname(item.diskName).toLowerCase()
+
+    if (![
+      ".pdf", ".docx", ".txt", ".md",
+      ".csv", ".json", ".eml", ".msg"
+    ].includes(ext)) {
+      status.skipped++
+      continue
+    }
+
+    reindexAttempted.add(key)
+
+    try {
+      const file = path.join(folder, item.diskName)
+
+      const extracted = textExt.has(ext)
+        ? {
+            text: (await fs.readFile(file, "utf8")).slice(0, 100000),
+            warning: null
+          }
+        : await extractPath(file)
+
+      item.extracted_text = String(extracted.text || "").trim()
+      item.extraction_warning = extracted.warning || null
+      item.extraction_attempted = true
+      changed = true
+
+      if (item.extracted_text) {
+        status.indexed++
+      } else {
+        status.unreadable.push({
+          name: item.name,
+          reason: extracted.warning || "No selectable text"
+        })
+      }
+    } catch (error) {
+      status.failed.push({
+        name: item.name,
+        error: error.message
+      })
+      console.warn(`[index] ${item.name}: ${error.message}`)
+    }
+  }
+
+  if (changed) await persist()
+  return status
+}
+
+function makeKnowledgeRecords(project) {
+  return [
+    ...projectRecords(project, db.evidence).map(item => ({
+      key: `e-${item.id}`,
+      kind: "E",
+      name: item.name,
+      type: item.category === "voice"
+        ? "Voice recording"
+        : item.category === "photo"
+          ? "Site photo"
+          : "Uploaded evidence",
+      text: String(
+        item.extracted_text ||
+        item.transcription?.text ||
+        item.summary ||
+        ""
+      ),
+      url: `/api/evidence/${item.id}/file`,
+      date: item.uploaded_at,
+      icon: "📎"
+    })),
+
+    ...projectRecords(project, db.documents).map(item => ({
+      key: `d-${item.id}`,
+      kind: "D",
+      name: item.name,
+      type: item.extracted_text?.trim()
+        ? "Saved report"
+        : "Report summary only",
+      text: String(
+        item.extracted_text ||
+        item.summary ||
+        ""
+      ),
+      url: `/api/repository/${item.id}/file`,
+      date: item.created_at,
+      icon: "📄"
+    })),
+
+    ...db.schedule
+      .filter(item => item.project === project)
+      .map((item, index) => ({
+        key: `s-${item.id || index}`,
+        kind: "S",
+        name: item.Activity || "Schedule entry",
+        type: "Project schedule",
+        text: JSON.stringify({
+          activity: item.Activity,
+          trade: item.Trade,
+          planned_progress: item["Planned Progress"],
+          actual_progress: item["Actual Progress"],
+          planned_completion: item["Planned Completion"],
+          actual_completion: item["Actual Completion"],
+          root_cause: item["Root Cause"]
+        }),
+        url: null,
+        date: null,
+        icon: "📊"
+      }))
+  ]
+    .filter(item => item.text.trim())
+    .map(item => {
+      const declaredProject = item.kind === "S"
+        ? ""
+        : detectDeclaredProject(item.text)
+
+      return {
+        ...item,
+        declaredProject,
+        mismatch: Boolean(
+          declaredProject &&
+          !matchesProject(declaredProject, project)
+        )
+      }
+    })
+}
+
+function splitKnowledgeText(
+  text,
+  size = RETRIEVAL_CHUNK_SIZE,
+  overlap = 230
+) {
+  const value = String(text || "").trim()
+  const chunks = []
+
+  for (let at = 0; at < value.length && chunks.length < 60;) {
+    const end = Math.min(value.length, at + size)
+    chunks.push(value.slice(at, end))
+
+    if (end === value.length) break
+    at = end - overlap
+  }
+
+  return chunks
+}
+
+function queryTerms(question) {
+  const ignored = new Set([
+    "summarize", "summary", "summarise", "tell",
+    "about", "show", "what", "when", "were",
+    "where", "which", "have", "the", "and",
+    "from", "please", "give", "with", "all",
+    "this", "those", "them", "these", "there",
+    "your", "would", "could", "for", "project",
+    "documents", "document", "reports", "report",
+    "was", "are", "how"
+  ])
+
+  const relatives = {
+    weather: [
+      "rain", "drizzle", "wind", "cloud",
+      "sun", "temperature", "wetter"
+    ],
+    progress: [
+      "completed", "finished", "installed",
+      "planned", "actual", "percent", "schedule"
+    ],
+    delay: [
+      "late", "delivered", "delivery",
+      "supplier", "waiting", "verspätung"
+    ],
+    safety: [
+      "injury", "accident", "hazard",
+      "guardrail", "inspection", "incident"
+    ],
+    staffing: [
+      "workers", "personnel", "crew",
+      "labor", "shortage"
+    ],
+    excavation: [
+      "foundation", "pit", "digging", "soil"
+    ]
+  }
+
+  const terms = cleanWords(question)
+    .split(" ")
+    .filter(term => term.length > 2 && !ignored.has(term))
+
+  return [
+    ...new Set(
+      terms.flatMap(term => [
+        term,
+        ...(relatives[term] || [])
+      ])
+    )
+  ]
+}
+
+function retrieveKnowledge(records, question, project) {
+  const q = cleanWords(question)
+
+  const wantsVoice =
+    /\b(voice|voices|audio|recording|recordings|transcript|transcription|dictation|dictate)\b/.test(q)
+
+  const wantsDocs =
+    /\b(pdf|pdfs|document|documents|written report|written reports)\b/.test(q)
+
+  const isSummary =
+    /\b(summarize|summarise|summary|overview|recap|meeting|status|progress|all|everything|compare|discuss|talking points)\b/.test(q)
+
+  let eligible = records.filter(record =>
+    !record.mismatch ||
+    (wantsVoice && record.type === "Voice recording") ||
+    (wantsDocs && record.type !== "Voice recording")
+  )
+
+  if (!eligible.length) eligible = records
+
+  if (wantsVoice) {
+    eligible = eligible.filter(
+      record => record.type === "Voice recording"
+    )
+  } else if (wantsDocs) {
+    eligible = eligible.filter(
+      record => record.type !== "Voice recording"
+    )
+  }
+
+  if (!eligible.length) return []
+
+  const terms = queryTerms(question)
+
+  const chunks = eligible.flatMap((record, fileOrder) =>
+    splitKnowledgeText(record.text).map((text, index) => {
+      const haystack = cleanWords(
+        `${record.name} ${record.type} ${text}`
+      )
+
+      let score = terms.reduce(
+        (total, term) =>
+          total + (haystack.includes(term) ? 2 : 0),
+        0
+      )
+
+      if (
+        terms.length &&
+        terms.every(term => haystack.includes(term))
+      ) {
+        score += 4
+      }
+
+      if (wantsVoice && record.type === "Voice recording") score += 12
+      if (wantsDocs && record.kind === "D") score += 3
+      if (isSummary && index === 0) score += 3
+      if (!record.mismatch) score += 5
+
+      score += Math.max(0, 1 - fileOrder * 0.01)
+
+      return {
+        ...record,
+        text,
+        chunk: index,
+        score
+      }
+    })
+  )
+
+  const total = chunks.reduce(
+    (sum, item) => sum + item.text.length,
+    0
+  )
+
+  // For small projects, pass all relevant document text to Qwen.
+  if (
+    total <= RETRIEVAL_CONTEXT_LIMIT - 1000 &&
+    chunks.length <= RETRIEVAL_CHUNKS
+  ) {
+    return chunks
+  }
+
+  // For large projects, rank chunks and keep within context limit.
+  chunks.sort((a, b) => b.score - a.score)
+
+  const selected = []
+  const byFile = new Map()
+  let budget = RETRIEVAL_CONTEXT_LIMIT - 1000
+
+  for (const item of chunks) {
+    if (
+      selected.length >= RETRIEVAL_CHUNKS ||
+      budget < 250
+    ) {
+      break
+    }
+
+    const count = byFile.get(item.key) || 0
+
+    if (count >= (isSummary ? 2 : 3)) continue
+
+    const text = item.text.slice(0, budget)
+
+    selected.push({
+      ...item,
+      text
+    })
+
+    budget -= text.length + 170
+    byFile.set(item.key, count + 1)
+  }
+
+  return selected
+}
+
+app.post("/api/knowledge/reindex", async (req, res, next) => {
+  try {
+    const project = projectName(req.body?.project)
+
+    res.json({
+      success: true,
+      project,
+      ...(await indexProject(project, true))
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.post("/api/knowledge/search", async (req, res, next) => {
+  try {
+    const project = projectName(req.body?.project)
+    const question = String(req.body?.question || "").trim()
+
+    if (!question || question.length > 1600) {
+      return res.status(400).json({
+        error: "Question must contain 1-1600 characters"
+      })
+    }
+
+    const history = Array.isArray(req.body?.history)
+      ? req.body.history.slice(-6)
+      : []
+
+    const indexing = await indexProject(project)
+    const records = makeKnowledgeRecords(project)
+
+    if (!records.length) {
+      return res.json({
+        success: true,
+        search_mode: "qwen3 indexed",
+        indexing,
+        result: {
+          role: "assistant",
+          found: false,
+          answer: `No readable project evidence is indexed for ${project}.`,
+          documents: [],
+          sources: [],
+          source_count: 0
+        }
+      })
+    }
+
+    const selected = retrieveKnowledge(
+      records,
+      question,
+      project
+    )
+
+    if (!selected.length) {
+      return res.json({
+        success: true,
+        search_mode: "qwen3 indexed",
+        indexing,
+        result: {
+          role: "assistant",
+          found: false,
+          answer: "No documents of that type were found for this project.",
+          documents: [],
+          sources: [],
+          source_count: 0
+        }
+      })
+    }
+
+    const counters = {
+      E: 0,
+      D: 0,
+      S: 0
+    }
+
+    const sources = selected.map(chunk => ({
+      ...chunk,
+      id: `${chunk.kind}${++counters[chunk.kind]}`
+    }))
+
+    const ai = await aiRequest(
+      `${QWEN_URL}/ask`,
+      JSON.stringify({
+        project,
+        question,
+        history,
+        sources: sources.map(source => ({
+          id: source.id,
+          name: source.name,
+          type: source.type,
+          text: source.text,
+          declared_project: source.declaredProject || "",
+          project_mismatch: source.mismatch
+        }))
+      }),
+      {
+        "Content-Type": "application/json"
+      },
+      300000
+    )
+
+    const reply = ai.result || {}
+    const cited = Array.isArray(reply.source_ids)
+      ? reply.source_ids
+      : []
+
+    const referenced = cited
+      .map(id => sources.find(item => item.id === id))
+      .filter(Boolean)
+
+    const used = [
+      ...new Map(
+        referenced.map(item => [item.key, item])
+      ).values()
+    ]
+
+    const found = reply.found === true && used.length > 0
+
+    const details = used.map(item => ({
+      id: item.key.slice(2),
+      name: item.name,
+      type: item.type,
+      url: item.url,
+      date: item.date,
+      icon: item.icon,
+      snippet: item.text.slice(0, 280),
+      declared_project: item.declaredProject || null,
+      project_mismatch: item.mismatch
+    }))
+
+    const mismatch = used.filter(
+      item => item.mismatch && item.declaredProject
+    )
+
+    const notes = mismatch.length
+      ? `\n\n⚠️ Project mismatch: ${
+          [...new Set(
+            mismatch.map(
+              item =>
+                `${item.name} describes ${item.declaredProject}, not ${project}`
+            )
+          )].join("; ")
+        }. Review its project assignment.`
+      : ""
+
+    res.json({
+      success: true,
+      search_mode: "qwen3 indexed",
+      indexing,
+      result: {
+        role: "assistant",
+        found,
+        answer: found
+          ? String(reply.answer || "") + notes
+          : "I couldn't verify that from the indexed project records.",
+        documents: details.map(item => [
+          item.icon,
+          item.name,
+          item.type,
+          item.url
+        ]),
+        sources: details,
+        source_count: details.length
+      }
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+// GET PROJECT SCHEDULE
+app.get("/api/schedule", (req, res) => {
+  res.json({
+    items: db.schedule.filter(
+      item =>
+        item.project === projectName(
+          req.query.project
+        )
+    )
+  })
+})
+
+// SAVE PROJECT SCHEDULE
+app.put(
+  "/api/schedule",
+  async (req, res, next) => {
+    try {
+      const project = projectName(
+        req.body?.project
+      )
+
+      if (
+        !Array.isArray(req.body?.items) ||
+        req.body.items.length > 100
+      ) {
+        return res.status(400).json({
+          error:
+            "Expected up to 100 schedule rows"
+        })
+      }
+
+      const items = req.body.items.map(
+        (value, index) => ({
+          id: String(
+            value.id ||
+            randomUUID()
+          ),
+          project,
+          Activity: String(
+            value.Activity ||
+            `Activity ${index + 1}`
+          ).slice(0, 140),
+          Trade: String(
+            value.Trade || ""
+          ).slice(0, 100),
+          "Planned Progress": Math.max(
+            0,
+            Math.min(
+              100,
+              Number(
+                value["Planned Progress"]
+              ) || 0
+            )
+          ),
+          "Actual Progress": Math.max(
+            0,
+            Math.min(
+              100,
+              Number(
+                value["Actual Progress"]
+              ) || 0
+            )
+          ),
+          "Planned Completion": String(
+            value["Planned Completion"] || ""
+          ),
+          "Actual Completion": String(
+            value["Actual Completion"] || ""
+          ),
+          "Root Cause": String(
+            value["Root Cause"] || ""
+          )
+        })
+      )
+
+      db.schedule = db.schedule
+        .filter(
+          item =>
+            item.project !== project
+        )
+        .concat(items)
+
+      await persist()
+
+      res.json({
+        items
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+// ERROR HANDLER
+app.use(
+  (error, req, res, next) => {
+    console.error(
+      `[${req.method} ${req.path}]`,
+      error
+    )
+
+    if (error instanceof multer.MulterError) {
+      return res.status(400).json({
+        error: error.message
+      })
+    }
+
+    const bad =
+      /unsupported|invalid|missing|required|too large/i
+        .test(error.message || "")
+
+    res.status(
+      bad
+        ? 400
+        : 502
+    ).json({
+      error:
+        error.message ||
+        "Server error"
+    })
+  }
+)
+
+await setup()
+
+app.listen(
+  PORT,
+  process.env.HOST || "127.0.0.1",
+  () => console.log(
+    `Express running on http://localhost:${PORT}; local storage: ${DATA}`
+  )
+)

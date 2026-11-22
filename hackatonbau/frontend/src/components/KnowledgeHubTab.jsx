@@ -1,11 +1,6 @@
-import React, { useMemo, useState } from "react"
-import {
-  Building2,
-  Download,
-  Eye,
-  FileCheck2,
-  Search,
-} from "lucide-react"
+import React, { useCallback, useEffect, useMemo, useState } from "react"
+import { Download, Eye, FileCheck2, RefreshCw, Search } from "lucide-react"
+import { api } from "../api/client"
 import { docIconFor, documentDownloadBlob } from "../utils/documentUtils"
 import { triggerDownload } from "../utils/exporters"
 
@@ -13,7 +8,7 @@ const EXAMPLE_QUERIES = [
   "When was the last supplier delay?",
   "Show all safety incidents.",
   "Find reports related to excavation.",
-  "Summarize project progress.",
+  "Summarize project progress."
 ]
 
 const FILTER_PILLS = [
@@ -21,234 +16,263 @@ const FILTER_PILLS = [
   { id: "Daily Reports", label: "Daily Reports" },
   { id: "Delay Notices", label: "Delay Notices" },
   { id: "Safety", label: "Safety" },
-  { id: "Evidence", label: "Evidence" },
+  { id: "Evidence", label: "Evidence" }
 ]
 
-function buildPreloadedDocs(activeProject) {
-  return [
-    {
-      id: "BD-20261121-2040",
-      name: "Daily Construction Report — 21 Nov 2026",
-      type: "Daily Construction Report",
-      category: "Daily Reports",
-      date_label: "21 Nov 2026",
-      status: "Exported",
-      evidence_count: 6,
-      project: activeProject,
-      partners: ["ABC Concrete", "Shell Contractor A"],
-      snippet:
-        "Core slab pour on axes A–F completed (36 m³ C30/37). ABC Concrete arrived 3 hours late at 11:00 due to batching plant maintenance; overall site progress at 62% vs. 71% planned.",
-      summary:
-        "Daily Construction Report documenting 36 m³ C30/37 foundation slab pour on axes A–F, a 3-hour ready-mix delivery delay from ABC Concrete, and Shell Contractor A's reinforcement release at 10:30.",
-    },
-    {
-      id: "SC-20261120-1145",
-      name: "Delay Notice — VOB/B § 6 (Concrete Delivery)",
-      type: "Delay Notice",
-      category: "Delay Notices",
-      date_label: "20 Nov 2026",
-      status: "Exported",
-      evidence_count: 4,
-      project: activeProject,
-      partners: ["ABC Concrete"],
-      snippet:
-        "Formal VOB/B § 6 hindrance notice issued after ABC Concrete missed the 08:00 delivery slot for the third time this month, causing 3 hours of crew standstill (€24,500 cumulative claim exposure).",
-      summary:
-        "Formal Delay Notice (VOB/B § 6) logged against ABC Concrete for repeated late mixer arrivals impacting critical-path slab pouring and crew standby costs.",
-    },
-    {
-      id: "BD-20261119-1610",
-      name: "Safety Inspection — Level 3 Guardrail & SiGeKo",
-      type: "Incident/Safety Report",
-      category: "Safety",
-      date_label: "19 Nov 2026",
-      status: "Exported",
-      evidence_count: 3,
-      project: activeProject,
-      partners: ["Shell Contractor A"],
-      snippet:
-        "SiGeKo walkthrough identified an incomplete perimeter guardrail at Level 3, axis 5/C. Area was immediately cordoned off and Shell Contractor A was instructed to rectify prior to crane lift.",
-      summary:
-        "Safety & SiGeKo inspection report recording an incomplete guardrail on Level 3 (axis 5/C) assigned to Shell Contractor A, with immediate access restriction and corrective action tracking.",
-    },
-    {
-      id: "EV-20261120-1100",
-      name: "Concrete Delivery Slip #7731–7734 (C30/37)",
-      type: "Evidence",
-      category: "Evidence",
-      date_label: "20 Nov 2026",
-      status: "Exported",
-      evidence_count: 1,
-      project: activeProject,
-      partners: ["ABC Concrete"],
-      snippet:
-        "Delivery slips #7731–7734 from ABC Concrete confirming 36 m³ ready-mix C30/37 delivered across 4 trucks at 11:00 (3h behind scheduled 08:00 slot); test cubes #21–23 taken.",
-      summary:
-        "Verified supplier delivery slips for 36 m³ C30/37 concrete from ABC Concrete with timestamped arrival logs and quality cube references.",
-    },
-    {
-      id: "BD-20261114-0930",
-      name: "Site Inspection — Excavation & Foundation Pit",
-      type: "Site Inspection Report",
-      category: "Daily Reports",
-      date_label: "14 Nov 2026",
-      status: "Exported",
-      evidence_count: 5,
-      project: activeProject,
-      partners: ["Shell Contractor A"],
-      snippet:
-        "Excavation pit dewatering and shoring anchor tension verified by structural engineer. Soil bearing capacity confirmed along axes A–F; excavation cleared for blinding layer.",
-      summary:
-        "Geotechnical and structural inspection of the main excavation pit confirming dewatering stability, shoring anchor loads, and release for foundation blinding.",
-    },
-    {
-      id: "BD-20261118-1745",
-      name: "Daily Construction Report — MEP & Electrical Rough-In",
-      type: "Daily Construction Report",
-      category: "Daily Reports",
-      date_label: "18 Nov 2026",
-      status: "Draft",
-      evidence_count: 3,
-      project: activeProject,
-      partners: ["Elektro Weber"],
-      snippet:
-        "Elektro Weber completed 85% of basement cable tray installation and Level 1–2 riser sleeves on schedule with zero safety defects or schedule variance.",
-      summary:
-        "Progress report covering Elektro Weber's electrical rough-in across basement and Levels 1–2, tracking fully on schedule with all quality checks passed.",
-    },
-  ]
+const API_BASE = (
+  import.meta.env.VITE_API_URL ||
+  import.meta.env.VITE_API_BASE_URL ||
+  "http://localhost:3000"
+).replace(/\/$/, "")
+
+function fileUrl(url) {
+  if (!url) return ""
+  if (/^https?:\/\//i.test(url)) return url
+  return `${API_BASE}${url.startsWith("/") ? "" : "/"}${url}`
 }
 
-function classifyFilterBucket(doc) {
-  if (doc.category) return doc.category
-  const t = `${doc.type || ""} ${doc.name || ""}`.toLowerCase()
-  if (t.includes("delay") || t.includes("notice")) return "Delay Notices"
-  if (t.includes("safety") || t.includes("incident") || t.includes("sigeko")) return "Safety"
-  if (t.includes("evidence") || t.includes("delivery") || t.includes("slip")) return "Evidence"
+function docCategory(doc) {
+  if (
+    doc.kind === "evidence" ||
+    doc.category === "voice" ||
+    doc.category === "photo" ||
+    doc.category === "text"
+  ) return "Evidence"
+
+  const text = `${doc.type || ""} ${doc.name || ""}`.toLowerCase()
+  if (text.includes("delay") || text.includes("hindrance")) return "Delay Notices"
+  if (text.includes("safety") || text.includes("incident") || text.includes("sigeko")) return "Safety"
+  if (text.includes("evidence") || text.includes("delivery slip")) return "Evidence"
   return "Daily Reports"
 }
 
-function buildLocalCitationAnswer(query, docs, scopeLabel) {
-  const q = query.toLowerCase()
-  const tokens = q
-    .replace(/[^a-z0-9äöüß\s]/gi, " ")
-    .split(/\s+/)
-    .filter(w => w.length > 2)
+function dateLabel(value) {
+  if (!value) return "—"
+  const date = new Date(value)
+  return Number.isNaN(date.getTime())
+    ? String(value)
+    : date.toLocaleString("en-GB", {
+        dateStyle: "medium",
+        timeStyle: "short"
+      })
+}
 
-  const scored = docs
-    .map(doc => {
-      const hay = `${doc.name} ${doc.type} ${doc.summary || ""} ${doc.snippet || ""} ${(doc.partners || []).join(" ")}`.toLowerCase()
-      let score = 0
-      for (const tok of tokens) {
-        if (hay.includes(tok)) score += 2
-      }
-      if ((q.includes("delay") || q.includes("supplier")) && (hay.includes("delay") || hay.includes("concrete") || hay.includes("vob"))) score += 4
-      if ((q.includes("safety") || q.includes("incident")) && (hay.includes("safety") || hay.includes("guardrail") || hay.includes("sigeko"))) score += 4
-      if (q.includes("excavation") && (hay.includes("excavation") || hay.includes("foundation") || hay.includes("dewatering"))) score += 5
-      if ((q.includes("progress") || q.includes("summarize")) && (hay.includes("progress") || hay.includes("daily") || hay.includes("completed"))) score += 3
-      return { doc, score }
-    })
-    .filter(x => x.score > 0)
-    .sort((a, b) => b.score - a.score)
-
-  const matched = (scored.length ? scored : docs.slice(0, 2).map(doc => ({ doc, score: 1 })))
-    .slice(0, 3)
-    .map(x => x.doc)
-
-  let summary = ""
-  if (q.includes("delay") || q.includes("supplier")) {
-    summary =
-      `The most recent supplier delay was logged on 20–21 Nov 2026 involving ABC Concrete, whose C30/37 ready-mix trucks arrived 3 hours late (11:00 instead of 08:00) due to batching plant maintenance. ` +
-      `A formal VOB/B § 6 Delay Notice (SC-20261120-1145) has been issued covering crew standstill exposure.`
-  } else if (q.includes("safety") || q.includes("incident")) {
-    summary =
-      `Across ${scopeLabel}, the primary open safety item is an incomplete Level 3 perimeter guardrail at axis 5/C assigned to Shell Contractor A (BD-20261119-1610). ` +
-      `The zone was immediately cordoned off during the SiGeKo walkthrough pending documented rectification.`
-  } else if (q.includes("excavation")) {
-    summary =
-      `Excavation and foundation pit inspection (BD-20261114-0930) confirmed stable dewatering, verified shoring anchor loads, and approved soil bearing capacity along axes A–F. ` +
-      `No open geotechnical holds remain on the excavation works.`
-  } else if (q.includes("progress") || q.includes("summarize")) {
-    summary =
-      `Verified site reports show structural concrete pouring and MEP rough-in advancing, with Elektro Weber tracking on schedule across basement and Levels 1–2 (BD-20261118-1745). ` +
-      `Overall completion is currently affected by recurring concrete delivery delays from ABC Concrete and one open Level 3 safety rectification item.`
-  } else if (scored.length > 0) {
-    const top = matched[0]
-    summary = `Found ${matched.length} verified record(s) in ${scopeLabel} matching your query. Most relevant: ${top.name} (${top.id}, ${top.date_label}) — ${top.snippet || top.summary}`
-  } else {
-    summary = `No exact keyword match was found in ${scopeLabel}. Showing the most recent verified site records for reference.`
+function normalizeReport(doc, project) {
+  return {
+    ...doc,
+    id: String(doc.id),
+    name: doc.name || "Untitled report",
+    type: doc.type || "Saved report",
+    project: doc.project || project,
+    kind: "report",
+    date_label: doc.date_label || dateLabel(doc.created_at),
+    status: doc.status || "Exported",
+    category: docCategory(doc),
+    snippet: doc.snippet || doc.summary || "",
+    url: doc.url || null
   }
+}
 
-  return { summary, sources: matched }
+function normalizeEvidence(item, project) {
+  return {
+    id: String(item.id),
+    name: item.name || "Uploaded evidence",
+    type: item.category === "voice"
+      ? "Voice recording"
+      : item.category === "photo"
+        ? "Site photo"
+        : "Uploaded evidence",
+    kind: "evidence",
+    project: item.project || project,
+    date_label: dateLabel(item.uploaded_at),
+    status: "Uploaded",
+    category: "Evidence",
+    snippet: item.extracted_text || item.summary || "",
+    url: item.url || `/api/evidence/${item.id}/file`
+  }
+}
+
+function extractSources(answer, docs) {
+  const sourceList =
+    Array.isArray(answer?.sources) && answer.sources.length
+      ? answer.sources
+      : (answer?.documents || [])
+
+  return sourceList.map((source, index) => {
+    if (Array.isArray(source)) {
+      const [, name, type, url] = source
+      const existing = docs.find(
+        item => item.url === url || item.name === name
+      )
+
+      return {
+        id: existing?.id || `source-${index}`,
+        name: name || existing?.name || "Source",
+        type: type || existing?.type || "Record",
+        url,
+        snippet: existing?.snippet || "",
+        date_label: existing?.date_label || ""
+      }
+    }
+
+    const existing = docs.find(
+      item =>
+        item.url === source.url ||
+        item.id === source.id ||
+        item.name === source.name
+    )
+
+    return {
+      ...existing,
+      ...source,
+      id: source.id || existing?.id || `source-${index}`,
+      date_label: existing?.date_label || dateLabel(source.date),
+      snippet: source.snippet || existing?.snippet || ""
+    }
+  }).filter(source => source.name)
+}
+
+function RichText({ text }) {
+  return String(text || "")
+    .split(/(\*\*[^*]+\*\*)/g)
+    .map((part, i) =>
+      part.startsWith("**") && part.endsWith("**")
+        ? <strong key={i}>{part.slice(2, -2)}</strong>
+        : <React.Fragment key={i}>{part}</React.Fragment>
+    )
 }
 
 export default function KnowledgeHubTab({
   project,
-  repositoryDocs,
+  repositoryDocs = [],
   answerQuestionFn,
   onRecordSearch,
-  onOpenDocument,
+  onOpenDocument
 }) {
   const [searchQuery, setSearchQuery] = useState("")
   const [lastResult, setLastResult] = useState(null)
   const [isSearching, setIsSearching] = useState(false)
-
   const [repoSearch, setRepoSearch] = useState("")
   const [selectedFilter, setSelectedFilter] = useState("All")
+  const [backendDocs, setBackendDocs] = useState([])
+  const [evidenceDocs, setEvidenceDocs] = useState([])
+  const [loadingDocs, setLoadingDocs] = useState(false)
+  const [loadError, setLoadError] = useState("")
 
-  // Combine newly exported live backend docs at the top + realistic preloaded records
+  const refreshDocuments = useCallback(async (showLoading = false) => {
+    if (showLoading) setLoadingDocs(true)
+
+    const query = `?project=${encodeURIComponent(project)}`
+
+    const results = await Promise.allSettled([
+      api(`/api/repository${query}`),
+      api(`/api/evidence${query}`)
+    ])
+
+    if (results[0].status === "fulfilled") {
+      setBackendDocs(
+        Array.isArray(results[0].value?.items)
+          ? results[0].value.items
+          : []
+      )
+    }
+
+    if (results[1].status === "fulfilled") {
+      setEvidenceDocs(
+        Array.isArray(results[1].value?.items)
+          ? results[1].value.items
+          : []
+      )
+    }
+
+    setLoadError(
+      results.every(result => result.status === "rejected")
+        ? "Unable to load project files from Express."
+        : ""
+    )
+
+    if (showLoading) setLoadingDocs(false)
+  }, [project])
+
+  useEffect(() => {
+    setLastResult(null)
+    setBackendDocs([])
+    setEvidenceDocs([])
+
+    refreshDocuments(true)
+
+    const handleFocus = () => refreshDocuments(false)
+    window.addEventListener("focus", handleFocus)
+
+    const timer = window.setInterval(handleFocus, 30000)
+
+    return () => {
+      window.removeEventListener("focus", handleFocus)
+      window.clearInterval(timer)
+    }
+  }, [refreshDocuments])
+
   const currentProjectDocs = useMemo(() => {
-    const live = (repositoryDocs || []).map(doc => ({
-      ...doc,
-      project: doc.project || project,
-      category: classifyFilterBucket(doc),
-      snippet: doc.snippet || doc.summary,
-      partners: doc.partners || [],
-    }))
-    const liveIds = new Set(live.map(d => d.id))
-    const preloaded = buildPreloadedDocs(project).filter(d => !liveIds.has(d.id))
-    return [...live, ...preloaded]
-  }, [repositoryDocs, project])
+    const combined = new Map()
+
+    for (const doc of repositoryDocs || []) {
+      if (doc.project && doc.project !== project) continue
+      combined.set(`report-${doc.id}`, normalizeReport(doc, project))
+    }
+
+    for (const doc of backendDocs) {
+      if (doc.project && doc.project !== project) continue
+      combined.set(`report-${doc.id}`, normalizeReport(doc, project))
+    }
+
+    for (const item of evidenceDocs) {
+      if (item.project && item.project !== project) continue
+      combined.set(`evidence-${item.id}`, normalizeEvidence(item, project))
+    }
+
+    return [...combined.values()].sort((a, b) => {
+      const da = a.created_at || a.uploaded_at || a.date_label || ""
+      const db = b.created_at || b.uploaded_at || b.date_label || ""
+      return String(db).localeCompare(String(da))
+    })
+  }, [repositoryDocs, backendDocs, evidenceDocs, project])
 
   const runSearch = async rawQuery => {
-    const clean = rawQuery.trim()
-    if (!clean) return
-    setSearchQuery(clean)
-    onRecordSearch(clean)
-    setIsSearching(true)
+    const question = String(rawQuery || "").trim()
+    if (!question || isSearching) return
 
-    const localCitation = buildLocalCitationAnswer(clean, currentProjectDocs, project)
+    setSearchQuery(question)
+    onRecordSearch?.(question)
+    setIsSearching(true)
+    setLastResult(null)
 
     try {
-      if (answerQuestionFn) {
-        const apiRes = await answerQuestionFn(clean)
-        const hasBackendText =
-          apiRes?.answer &&
-          !/no matching|couldn't find|not found|search failed/i.test(apiRes.answer) &&
-          (apiRes.documents?.length || 0) > 0
-
-        if (hasBackendText) {
-          setLastResult({
-            query: clean,
-            scope: project,
-            summary: apiRes.answer.replace(/\*\*/g, ""),
-            sources: localCitation.sources,
+      const response = answerQuestionFn
+        ? await answerQuestionFn(question)
+        : await api("/api/knowledge/search", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ project, question })
           })
-          return
-        }
-      }
+
+      const answer = response?.result || response
+      const sources = extractSources(answer, currentProjectDocs)
+
       setLastResult({
-        query: clean,
-        scope: project,
-        summary: localCitation.summary,
-        sources: localCitation.sources,
+        query: question,
+        summary: answer?.answer ||
+          "No answer was returned by the AI assistant.",
+        sources,
+        found: answer?.found === true
       })
-    } catch {
+    } catch (error) {
       setLastResult({
-        query: clean,
-        scope: project,
-        summary: localCitation.summary,
-        sources: localCitation.sources,
+        query: question,
+        summary:
+          `Knowledge search failed: ${error.message}. ` +
+          "Check that Express and project_assistant.py are running.",
+        sources: [],
+        found: false
       })
     } finally {
       setIsSearching(false)
@@ -256,46 +280,89 @@ export default function KnowledgeHubTab({
   }
 
   const filteredDocs = useMemo(() => {
-    const q = repoSearch.trim().toLowerCase()
+    const query = repoSearch.trim().toLowerCase()
+
     return currentProjectDocs.filter(doc => {
-      if (selectedFilter !== "All" && classifyFilterBucket(doc) !== selectedFilter) {
-        return false
-      }
-      if (!q) return true
-      return (
-        doc.name.toLowerCase().includes(q) ||
-        String(doc.id).toLowerCase().includes(q) ||
-        doc.type.toLowerCase().includes(q) ||
-        doc.status.toLowerCase().includes(q) ||
-        (doc.summary || "").toLowerCase().includes(q)
+      if (
+        selectedFilter !== "All" &&
+        docCategory(doc) !== selectedFilter
+      ) return false
+
+      return !query || [
+        doc.name,
+        doc.id,
+        doc.type,
+        doc.status,
+        doc.snippet
+      ].some(value =>
+        String(value || "").toLowerCase().includes(query)
       )
     })
   }, [currentProjectDocs, repoSearch, selectedFilter])
 
-  const handleDownloadPdf = doc => {
-    if (doc.url) {
-      window.open(doc.url, "_blank", "noopener,noreferrer")
+  const openDocument = doc => {
+    if (
+      doc.kind === "report" &&
+      typeof onOpenDocument === "function"
+    ) {
+      onOpenDocument(doc)
       return
     }
-    const { blob } = documentDownloadBlob(doc)
-    triggerDownload(blob, doc.name.endsWith(".pdf") ? doc.name : `${doc.id}.pdf`)
+
+    if (doc.url) {
+      window.open(
+        fileUrl(doc.url),
+        "_blank",
+        "noopener,noreferrer"
+      )
+    }
+  }
+
+  const downloadDocument = doc => {
+    if (doc.url) {
+      window.open(
+        fileUrl(doc.url),
+        "_blank",
+        "noopener,noreferrer"
+      )
+      return
+    }
+
+    try {
+      const { blob } = documentDownloadBlob(doc)
+      triggerDownload(
+        blob,
+        doc.name.endsWith(".pdf")
+          ? doc.name
+          : `${doc.id}.pdf`
+      )
+    } catch (error) {
+      console.error("Download failed", error)
+    }
   }
 
   return (
     <div className="stack">
-      {/* CITATION-BACKED KNOWLEDGE SEARCH */}
       <div>
-        <h2 className="section-title">Project Knowledge Search</h2>
+        <h2 className="section-title">
+          Project Knowledge Search
+        </h2>
         <p className="caption">
-          Source-backed answers strictly cited from verified site reports and evidence.
+          Ask Qwen about actual uploaded evidence, site reports
+          and project schedules. Every supported answer shows its sources.
         </p>
       </div>
 
       <div className="card stack">
         <div className="flex-row">
-          {EXAMPLE_QUERIES.map(q => (
-            <button key={q} type="button" className="pill-btn" onClick={() => runSearch(q)}>
-              {q}
+          {EXAMPLE_QUERIES.map(query => (
+            <button
+              key={query}
+              className="pill-btn"
+              type="button"
+              onClick={() => runSearch(query)}
+            >
+              {query}
             </button>
           ))}
         </div>
@@ -303,71 +370,133 @@ export default function KnowledgeHubTab({
         <form
           className="flex-row"
           style={{ flexWrap: "nowrap" }}
-          onSubmit={e => {
-            e.preventDefault()
+          onSubmit={event => {
+            event.preventDefault()
             runSearch(searchQuery)
           }}
         >
           <input
             className="input"
             value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
+            onChange={event => setSearchQuery(event.target.value)}
             placeholder={`Ask across ${project}…`}
+            aria-label="Ask about project documents"
           />
-          <button className="btn btn-primary" type="submit" disabled={isSearching}>
-            <Search size={15} /> {isSearching ? "Searching…" : "Search"}
+
+          <button
+            className="btn btn-primary"
+            type="submit"
+            disabled={isSearching || !searchQuery.trim()}
+          >
+            <Search size={15} />
+            {isSearching ? "Searching…" : "Search"}
           </button>
         </form>
 
         {lastResult && (
-          <div className="kh-result-block stack">
-            <hr className="divider" style={{ margin: "2px 0" }} />
+          <div
+            className="kh-result-block stack"
+            aria-live="polite"
+          >
+            <hr
+              className="divider"
+              style={{ margin: "2px 0" }}
+            />
 
-            {/* 1. Concise Summary Answer */}
             <div className="kh-answer-box">
-              <div className="flex-between" style={{ marginBottom: 6 }}>
+              <div
+                className="flex-between"
+                style={{ marginBottom: 6 }}
+              >
                 <div className="flex-row">
-                  <FileCheck2 size={15} color="#16a34a" />
-                  <strong>Verified Summary</strong>
-                  <span className="badge badge-blue">{lastResult.scope}</span>
+                  <FileCheck2
+                    size={15}
+                    color={
+                      lastResult.found
+                        ? "#16a34a"
+                        : "#64748b"
+                    }
+                  />
+                  <strong>
+                    {lastResult.found
+                      ? "Source-backed answer"
+                      : "Not confirmed"}
+                  </strong>
+                  <span className="badge badge-blue">
+                    {project}
+                  </span>
                 </div>
-                <span className="caption" style={{ margin: 0 }}>
+
+                <span
+                  className="caption"
+                  style={{ margin: 0 }}
+                >
                   “{lastResult.query}”
                 </span>
               </div>
-              <p className="kh-answer-text">{lastResult.summary}</p>
+
+              <p
+                className="kh-answer-text"
+                style={{ whiteSpace: "pre-wrap" }}
+              >
+                <RichText text={lastResult.summary} />
+              </p>
             </div>
 
-            {/* 2. Verified Source Cards */}
             {lastResult.sources.length > 0 && (
               <div className="stack-sm">
-                <strong style={{ fontSize: "0.84rem", color: "#334155" }}>
-                  Cited Sources ({lastResult.sources.length})
+                <strong
+                  style={{
+                    fontSize: "0.84rem",
+                    color: "#334155"
+                  }}
+                >
+                  Referenced source files ({lastResult.sources.length})
                 </strong>
+
                 <div className="grid-3">
-                  {lastResult.sources.map(src => (
-                    <div key={src.id} className="kh-source-card">
-                      <div className="flex-between">
-                        <code className="kh-source-id">{src.id}</code>
-                        <span className="caption" style={{ margin: 0 }}>
-                          {src.date_label}
-                        </span>
+                  {lastResult.sources.map(source => (
+                    <div
+                      className="kh-source-card"
+                      key={source.id}
+                    >
+                      <div
+                        style={{
+                          fontWeight: 600,
+                          overflowWrap: "anywhere"
+                        }}
+                      >
+                        {source.name}
                       </div>
-                      <div className="kh-source-project">
-                        <Building2 size={12} /> {src.project}
+
+                      <div className="caption">
+                        {source.type}
+                        {source.date_label
+                          ? ` · ${source.date_label}`
+                          : ""}
                       </div>
-                      <blockquote className="kh-source-quote">
-                        “{src.snippet || src.summary}”
-                      </blockquote>
-                      <div className="kh-source-footer">
+
+                      {source.snippet && (
+                        <blockquote className="kh-source-quote">
+                          “{source.snippet.slice(0, 260)}”
+                        </blockquote>
+                      )}
+
+                      {source.url && (
                         <button
                           type="button"
                           className="btn btn-sm"
-                          onClick={() => onOpenDocument(src)}
+                          onClick={() =>
+                            openDocument({
+                              ...source,
+                              kind: "evidence"
+                            })
+                          }
                         >
-                          <Eye size={13} /> View Source
+                          <Eye size={13} />
+                          Open source
                         </button>
-                      </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -377,105 +506,165 @@ export default function KnowledgeHubTab({
         )}
       </div>
 
-      {/* FULL-WIDTH DOCUMENT REPOSITORY */}
       <div className="stack">
-        <div>
-          <h2 className="section-title">Document Repository</h2>
-          <p className="caption">
-            Verified site reports, notices, and evidence sorted by most recent first.
-          </p>
+        <div className="flex-between">
+          <div>
+            <h2 className="section-title">
+              Document Repository
+            </h2>
+            <p className="caption">
+              Real project reports and uploaded evidence,
+              newest first. {currentProjectDocs.length} files listed.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => refreshDocuments(true)}
+            disabled={loadingDocs}
+          >
+            <RefreshCw size={14} />
+            {loadingDocs ? "Loading…" : "Refresh"}
+          </button>
         </div>
 
         <div className="card stack">
           <div className="kh-repo-toolbar">
             <div className="flex-row">
-              {FILTER_PILLS.map(pill => (
+              {FILTER_PILLS.map(filter => (
                 <button
-                  key={pill.id}
+                  key={filter.id}
                   type="button"
-                  className={`filter-chip ${selectedFilter === pill.id ? "active" : ""}`}
-                  onClick={() => setSelectedFilter(pill.id)}
+                  className={
+                    `filter-chip ${
+                      selectedFilter === filter.id
+                        ? "active"
+                        : ""
+                    }`
+                  }
+                  onClick={() =>
+                    setSelectedFilter(filter.id)
+                  }
                 >
-                  {pill.label}
+                  {filter.label}
                 </button>
               ))}
             </div>
+
             <input
               className="input kh-repo-search"
               value={repoSearch}
-              onChange={e => setRepoSearch(e.target.value)}
+              onChange={event =>
+                setRepoSearch(event.target.value)
+              }
               placeholder="Filter by title, ID, or type…"
             />
           </div>
 
+          {loadError && (
+            <div className="alert alert-info">
+              {loadError}
+            </div>
+          )}
+
           {filteredDocs.length === 0 ? (
             <div className="alert alert-info">
-              No documents match the current filter.{" "}
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={() => {
-                  setSelectedFilter("All")
-                  setRepoSearch("")
-                }}
-              >
-                Reset filters
-              </button>
+              {loadingDocs
+                ? "Loading documents…"
+                : "No uploaded files match this project or filter."}
+
+              {(selectedFilter !== "All" || repoSearch) && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => {
+                    setSelectedFilter("All")
+                    setRepoSearch("")
+                  }}
+                >
+                  Reset filters
+                </button>
+              )}
             </div>
           ) : (
             <div className="table-wrap">
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Document Name &amp; ID</th>
-                    <th>Report Type</th>
+                    <th>Document Name & ID</th>
+                    <th>Type</th>
                     <th>Date</th>
                     <th>Status</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
+
                 <tbody>
-                  {filteredDocs.map(doc => {
-                    const statusColor =
-                      doc.status === "Exported" || doc.status === "Final"
-                        ? "green"
-                        : "orange"
-                    return (
-                      <tr key={doc.id}>
-                        <td>
-                          <div style={{ fontWeight: 600 }}>
-                            {docIconFor(doc.name, doc.type)} {doc.name}
-                          </div>
-                          <div className="kh-doc-id">{doc.id}</div>
-                        </td>
-                        <td>{doc.type}</td>
-                        <td style={{ whiteSpace: "nowrap" }}>{doc.date_label}</td>
-                        <td>
-                          <span className={`badge badge-${statusColor}`}>
-                            {doc.status}
-                          </span>
-                        </td>
-                        <td>
-                          <div className="flex-row" style={{ flexWrap: "nowrap" }}>
-                            <button
-                              type="button"
-                              className="btn btn-sm"
-                              onClick={() => onOpenDocument(doc)}
-                            >
-                              <Eye size={13} /> Preview
-                            </button>
-                            <button
-                              type="button"
-                              className="btn btn-sm"
-                              onClick={() => handleDownloadPdf(doc)}
-                            >
-                              <Download size={13} /> PDF
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    )
-                  })}
+                  {filteredDocs.map(doc => (
+                    <tr key={`${doc.kind}-${doc.id}`}>
+                      <td>
+                        <div
+                          style={{
+                            fontWeight: 600,
+                            overflowWrap: "anywhere"
+                          }}
+                        >
+                          {docIconFor(doc.name, doc.type)}{" "}
+                          {doc.name}
+                        </div>
+                        <div className="kh-doc-id">
+                          {doc.id}
+                        </div>
+                      </td>
+
+                      <td>{doc.type}</td>
+
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        {doc.date_label}
+                      </td>
+
+                      <td>
+                        <span
+                          className={
+                            `badge badge-${
+                              ["Exported", "Final", "Uploaded"]
+                                .includes(doc.status)
+                                ? "green"
+                                : "orange"
+                            }`
+                          }
+                        >
+                          {doc.status}
+                        </span>
+                      </td>
+
+                      <td>
+                        <div
+                          className="flex-row"
+                          style={{ flexWrap: "nowrap" }}
+                        >
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            onClick={() => openDocument(doc)}
+                          >
+                            <Eye size={13} />
+                            Preview
+                          </button>
+
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            onClick={() => downloadDocument(doc)}
+                          >
+                            <Download size={13} />
+                            File
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>

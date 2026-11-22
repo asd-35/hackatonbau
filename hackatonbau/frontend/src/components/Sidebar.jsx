@@ -1,14 +1,69 @@
-import React, { useState } from "react";
-import { PROJECTS } from "../data/mockData";
+import React, { useMemo, useState } from "react"
+import { FolderPlus } from "lucide-react"
 
 export default function Sidebar({
   project,
+  projects = [],
+  projectsLoading = false,
   onProjectChange,
+  onCreateProject,
   tabs,
   activeTab,
-  onTabChange,
+  onTabChange
 }) {
-  const [mascotFailed, setMascotFailed] = useState(false);
+  const [mascotFailed, setMascotFailed] = useState(false)
+  const [showCreate, setShowCreate] = useState(false)
+  const [newProject, setNewProject] = useState("")
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState("")
+
+  const currentProject = useMemo(
+    () => projects.find(item =>
+      (typeof item === "string" ? item : item.name) === project
+    ),
+    [projects, project]
+  )
+
+  const options = projects
+    .map(item => typeof item === "string" ? item : item.name)
+    .filter(Boolean)
+
+  if (project && !options.includes(project)) options.unshift(project)
+
+  const count = typeof currentProject === "object"
+    ? currentProject?.total_files
+    : null
+
+  const scheduleCount = typeof currentProject === "object"
+    ? currentProject?.schedule_entries
+    : null
+
+  const create = async event => {
+    event.preventDefault()
+
+    const name = newProject.trim()
+
+    if (name.length < 3) {
+      setCreateError("Enter at least 3 characters")
+      return
+    }
+
+    setCreating(true)
+    setCreateError("")
+
+    try {
+      const created = await onCreateProject(name)
+
+      if (created) {
+        setNewProject("")
+        setShowCreate(false)
+      }
+    } catch (error) {
+      setCreateError(error.message || "Could not create project")
+    } finally {
+      setCreating(false)
+    }
+  }
 
   return (
     <aside className="sidebar">
@@ -22,16 +77,20 @@ export default function Sidebar({
               onError={() => setMascotFailed(true)}
             />
           )}
+
           <div className="brand-wordmark">
             <span className="brand-word-bau">Bau</span>
             <span className="brand-word-dackel">Dackel</span>
           </div>
         </div>
-        <div className="brand-tagline">Your site, in one workspace.</div>
+
+        <div className="brand-tagline">
+          Your site, in one workspace.
+        </div>
       </div>
 
       <nav className="sidebar-nav" aria-label="Workspace navigation">
-        {tabs.map((tab) => (
+        {tabs.map(tab => (
           <button
             key={tab.id}
             type="button"
@@ -48,36 +107,97 @@ export default function Sidebar({
           aria-label="Active project"
           className="sidebar-select"
           value={project}
-          onChange={(e) => onProjectChange(e.target.value)}
+          disabled={projectsLoading || creating}
+          onChange={e => onProjectChange(e.target.value)}
         >
-          {PROJECTS.map((item) => (
-            <option key={item} value={item}>
-              {item}
+          {options.map(name => (
+            <option key={name} value={name}>
+              {name}
             </option>
           ))}
         </select>
 
-        <div className="sidebar-helper-text">
-          Live progress is available in Performance Monitoring once you enter a real schedule.
-        </div>
-        {/* Demo figures removed until a project schedule is configured. */}
-        {/* <div className="progress-wrap">
-          <div className="progress-label">Progress · 62%</div>
-          <div className="progress-track">
-            <div className="progress-fill" style={{ width: "62%" }} />
-          </div>
+        <div className="sidebar-helper-text" style={{ marginTop: 12 }}>
+          {count != null
+            ? `${count} saved file${count === 1 ? "" : "s"} · ${scheduleCount || 0} schedule entries`
+            : "Your project's files and reports are stored separately."}
         </div>
 
-        <div className="sidebar-metrics">
-          <div>
-            <div className="sidebar-metric-label">Open issues</div>
-            <div className="sidebar-metric-value">3</div>
-          </div>
-          <div>
-            <div className="sidebar-metric-label">Delay risks</div>
-            <div className="sidebar-metric-value">2</div>
-          </div>
-        </div> */}
+        <button
+          type="button"
+          onClick={() => {
+            setShowCreate(value => !value)
+            setCreateError("")
+          }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 7,
+            marginTop: 12,
+            padding: "8px 10px",
+            width: "100%",
+            border: "1px solid #40516c",
+            borderRadius: 8,
+            color: "#fff",
+            background: "transparent",
+            cursor: "pointer",
+            fontSize: 12
+          }}
+        >
+          <FolderPlus size={15} />
+          {showCreate ? "Cancel" : "Create New Project"}
+        </button>
+
+        {showCreate && (
+          <form
+            onSubmit={create}
+            style={{
+              display: "grid",
+              gap: 8,
+              marginTop: 10
+            }}
+          >
+            <input
+              autoFocus
+              value={newProject}
+              onChange={e => setNewProject(e.target.value)}
+              maxLength={100}
+              placeholder="e.g. Hospital Hamburg"
+              aria-label="New project name"
+              style={{
+                width: "100%",
+                minWidth: 0,
+                padding: "9px",
+                border: "1px solid #40516c",
+                borderRadius: 8,
+                color: "#fff",
+                background: "#101b30"
+              }}
+            />
+
+            {createError && (
+              <span style={{ color: "#fecaca", fontSize: 11 }}>
+                {createError}
+              </span>
+            )}
+
+            <button
+              type="submit"
+              disabled={creating}
+              style={{
+                padding: "8px",
+                border: 0,
+                borderRadius: 8,
+                cursor: "pointer",
+                background: "#f97316",
+                color: "white",
+                fontWeight: 600
+              }}
+            >
+              {creating ? "Creating..." : "Create & Open"}
+            </button>
+          </form>
+        )}
       </div>
 
       <div className="sidebar-user">
@@ -85,5 +205,5 @@ export default function Sidebar({
         <div className="sidebar-user-role">Local Workspace</div>
       </div>
     </aside>
-  );
+  )
 }
